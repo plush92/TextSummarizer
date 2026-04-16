@@ -10,6 +10,7 @@ regex>=2023.10.3
 
 # Web UI
 streamlit>=1.28.0
+pandas>=2.0.0
 
 # Utilities (built-in modules, listed for reference)
 # json, os, sys, pathlib, datetime, re - all built-in

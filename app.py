@@ -272,51 +272,393 @@ def format_summary_display(result):
 
 
 def display_bias_analysis(result):
-    """Display bias analysis results with proper styling."""
+    """Display enhanced bias analysis results with comprehensive visualizations."""
     if not result or result.get('error'):
         st.error(f"Bias analysis failed: {result.get('error', 'Unknown error')}")
         return
     
-    st.markdown('<div class="section-header">🎯 Bias Analysis</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">🎯 Enhanced Bias Analysis</div>', unsafe_allow_html=True)
     
-    # Bias score with color coding
-    bias_score = result.get('bias_score', 0)
-    confidence = result.get('confidence', 0)
+    # Handle both old and new format
+    overall_score = result.get('overall_bias_score', result.get('bias_score', 0))
+    confidence = result.get('confidence_level', result.get('confidence', 0))
     direction = result.get('bias_direction', 'neutral')
     
-    col1, col2, col3 = st.columns(3)
+    # === OVERVIEW SECTION ===
+    col1, col2, col3, col4 = st.columns(4)
+    
     with col1:
-        if bias_score > 2:
-            st.error(f"**Bias Score:** {bias_score}/10 (Right-leaning)")
-        elif bias_score < -2:
-            st.error(f"**Bias Score:** {bias_score}/10 (Left-leaning)")
+        if overall_score > 2:
+            st.error(f"**Overall Bias**\n{overall_score}/10\n(Right-leaning)")
+        elif overall_score < -2:
+            st.error(f"**Overall Bias**\n{overall_score}/10\n(Left-leaning)")
         else:
-            st.success(f"**Bias Score:** {bias_score}/10 (Neutral)")
+            st.success(f"**Overall Bias**\n{overall_score}/10\n(Neutral)")
     
     with col2:
-        st.metric("Confidence", f"{confidence}%")
-    
+        confidence_color = "🟢" if confidence > 80 else "🟡" if confidence > 60 else "🔴"
+        st.metric("Confidence", f"{confidence}%", delta=None, 
+                 help="Confidence reflects how certain the analysis is based on available data. Higher scores indicate more reliable patterns detected. Calculated from source reliability, text length, and pattern clarity.")
+        st.markdown(f"{confidence_color}")
+
     with col3:
-        objectivity = result.get('objectivity_score', 0)
-        st.metric("Objectivity", f"{objectivity}%")
+        objectivity = result.get('objectivity_score', 100 - abs(overall_score * 10))
+        st.metric("Objectivity", f"{objectivity}%",
+                 help="Objectivity measures neutral language use and balanced perspective. Higher scores indicate less biased language. Calculated as inverse of bias intensity (100% - |bias_score| * 10).")
+        # Source context if available
+        if result.get('source_context'):
+            st.info(f"📰 {result['source_context']}")
+        else:
+            st.info("📰 Unknown source")
     
-    # Bias indicators
-    if result.get('bias_indicators'):
-        st.markdown("**🔍 Bias Indicators:**")
+    # === COMPONENT BREAKDOWN ===
+    if result.get('component_scores'):
+        st.markdown("### 📊 Bias Component Breakdown")
+        
+        components = result['component_scores']
+        
+        # Create visual component chart
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            # Component scores table
+            import pandas as pd
+            
+            component_data = {
+                'Component': ['Language Bias', 'Framing Bias', 'Omission Bias', 'Source Bias', 'Emotional Manipulation'],
+                'Score': [
+                    components.get('language_bias', 0),
+                    components.get('framing_bias', 0), 
+                    components.get('omission_bias', 0),
+                    components.get('source_bias', 0),
+                    components.get('emotional_manipulation', 0)
+                ],
+                'Impact': [
+                    '🔴' if abs(components.get('language_bias', 0)) > 2 else '🟡' if abs(components.get('language_bias', 0)) > 1 else '🟢',
+                    '🔴' if abs(components.get('framing_bias', 0)) > 2 else '🟡' if abs(components.get('framing_bias', 0)) > 1 else '🟢',
+                    '🔴' if abs(components.get('omission_bias', 0)) > 2 else '🟡' if abs(components.get('omission_bias', 0)) > 1 else '🟢',
+                    '🔴' if abs(components.get('source_bias', 0)) > 2 else '🟡' if abs(components.get('source_bias', 0)) > 1 else '🟢',
+                    '🔴' if abs(components.get('emotional_manipulation', 0)) > 2 else '🟡' if abs(components.get('emotional_manipulation', 0)) > 1 else '🟢'
+                ]
+            }
+            
+            df = pd.DataFrame(component_data)
+            st.dataframe(df, use_container_width=True, hide_index=True)
+        
+        with col2:
+            # Score justification
+            if result.get('explainability', {}).get('score_justification'):
+                st.markdown("**📝 Score Explanation:**")
+                st.info(result['explainability']['score_justification'])
+    
+    # === DETAILED ANALYSIS ===
+    if result.get('detailed_analysis'):
+        st.markdown("### 🔍 Detailed Analysis")
+        
+        detailed = result['detailed_analysis']
+        
+        # Create tabs for different analysis aspects
+        tab1, tab2, tab3, tab4 = st.tabs(["🗣️ Language & Emotion", "🎭 Framing Issues", "❓ Missing Context", "📊 Technical Analysis"])
+        
+        with tab1:
+            # Biased phrases and emotional analysis
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**🚨 Biased Phrases Detected:**")
+                if detailed.get('biased_phrases'):
+                    for phrase in detailed['biased_phrases'][:10]:  # Limit display
+                        if isinstance(phrase, dict):
+                            intensity_color = "🔴" if phrase.get('intensity', 0) > 7 else "🟡" if phrase.get('intensity', 0) > 4 else "🟢"
+                            st.markdown(f"{intensity_color} **\"{phrase.get('text', '')}\"** - {phrase.get('bias_type', 'unknown')} (intensity: {phrase.get('intensity', 0)}/10)")
+                        else:
+                            st.markdown(f"• {phrase}")
+                else:
+                    st.success("No significantly biased phrases detected")
+            
+            with col2:
+                st.markdown("**😤 Emotional Analysis:**")
+                emotion_analysis = detailed.get('emotion_analysis', {})
+                
+                dominant_tone = emotion_analysis.get('dominant_tone', 'neutral')
+                tone_emoji = {"anger": "😠", "fear": "😰", "moral_outrage": "😤", "contempt": "🙄", "neutral": "😐"}.get(dominant_tone, "😐")
+                
+                st.markdown(f"**Dominant Tone:** {tone_emoji} {dominant_tone.replace('_', ' ').title()}")
+                
+                if emotion_analysis.get('emotional_targets'):
+                    st.markdown("**Emotional targets:**")
+                    for target in emotion_analysis['emotional_targets'][:5]:
+                        st.markdown(f"• {target}")
+                
+                author_vs_quoted = emotion_analysis.get('author_vs_quoted', 'unknown')
+                if author_vs_quoted != 'unknown':
+                    st.markdown(f"**Source of emotion:** {author_vs_quoted}")
+            
+            # Tab-specific Reader Guidance for Language & Emotion
+            if result.get('reader_guidance'):
+                st.markdown("---")
+                st.markdown("### 🧭 Language Analysis Guidance")
+                guidance = result['reader_guidance']
+                
+                if guidance.get('key_concerns'):
+                    st.markdown("**⚠️ Key Language Concerns:**")
+                    language_concerns = [c for c in guidance['key_concerns'] if any(word in c.lower() for word in ['language', 'emotion', 'tone', 'phrase', 'word'])]
+                    for concern in language_concerns[:3]:
+                        st.warning(f"• {concern}")
+                
+                if guidance.get('critical_questions'):
+                    st.markdown("**❓ Questions About Language Use:**")
+                    language_questions = [q for q in guidance['critical_questions'] if any(word in q.lower() for word in ['language', 'emotion', 'tone', 'phrase', 'word'])]
+                    for question in language_questions[:3]:
+                        st.info(f"• {question}")
+        
+        with tab2:
+            # Framing issues
+            st.markdown("**🎭 Framing Analysis:**")
+            
+            if detailed.get('framing_issues'):
+                for issue in detailed['framing_issues']:
+                    if isinstance(issue, dict):
+                        st.warning(f"**{issue.get('type', 'Unknown').replace('_', ' ').title()}**: {issue.get('description', 'No description')}")
+                    else:
+                        st.warning(f"• {issue}")
+            else:
+                st.success("No significant framing issues detected")
+            
+            # Tab-specific Reader Guidance for Framing
+            if result.get('reader_guidance'):
+                st.markdown("---")
+                st.markdown("### 🧭 Framing Analysis Guidance")
+                guidance = result['reader_guidance']
+                
+                if guidance.get('alternative_framings'):
+                    st.markdown("**🔄 Alternative Perspectives to Consider:**")
+                    for framing in guidance['alternative_framings'][:4]:
+                        st.success(f"• {framing}")
+                
+                if guidance.get('suggested_sources'):
+                    st.markdown("**🔍 Sources for Different Framings:**")
+                    framing_sources = [s for s in guidance['suggested_sources'] if any(word in s.lower() for word in ['perspective', 'view', 'angle', 'frame'])]
+                    for source in (framing_sources or guidance['suggested_sources'])[:3]:
+                        st.markdown(f"• {source}")
+        
+        with tab3:
+            # Missing context
+            st.markdown("**❓ Missing Context Detection:**")
+            
+            if detailed.get('missing_context'):
+                for context in detailed['missing_context']:
+                    st.warning(f"⚠️ {context}")
+            else:
+                st.success("No obvious missing context detected")
+            
+            # Tab-specific Reader Guidance for Missing Context
+            if result.get('reader_guidance'):
+                st.markdown("---")
+                st.markdown("### 🧭 Context Analysis Guidance")
+                guidance = result['reader_guidance']
+                
+                if guidance.get('critical_questions'):
+                    st.markdown("**❓ Important Context Questions:**")
+                    context_questions = [q for q in guidance['critical_questions'] if any(word in q.lower() for word in ['context', 'background', 'history', 'why', 'what'])]
+                    for question in (context_questions or guidance['critical_questions'])[:4]:
+                        st.info(f"• {question}")
+                
+                if guidance.get('suggested_sources'):
+                    st.markdown("**📚 Sources for Additional Context:**")
+                    context_sources = [s for s in guidance['suggested_sources'] if any(word in s.lower() for word in ['context', 'background', 'history'])]
+                    for source in (context_sources or guidance['suggested_sources'])[:3]:
+                        st.markdown(f"• {source}")
+        
+        with tab4:
+            # Technical analysis
+            modality = detailed.get('modality_analysis', {})
+            
+            st.markdown("**📊 Certainty vs Speculation Analysis:**")
+            
+            certainty_level = modality.get('certainty_level', 'unknown')
+            certainty_color = {"high": "🔴", "medium": "🟡", "low": "🟢", "unknown": "⚪"}.get(certainty_level, "⚪")
+            
+            st.markdown(f"**Certainty Level:** {certainty_color} {certainty_level.title()}")
+            st.markdown(f"**Assertion Strength:** {modality.get('assertion_strength', 'unknown').title()}")
+            
+            if modality.get('speculation_markers'):
+                st.markdown("**Speculation markers found:**")
+                st.code(", ".join(modality['speculation_markers'][:10]))
+            
+            # Tab-specific Reader Guidance for Technical Analysis
+            if result.get('reader_guidance'):
+                st.markdown("---")
+                st.markdown("### 🧭 Technical Analysis Guidance")
+                guidance = result['reader_guidance']
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if guidance.get('key_concerns'):
+                        st.markdown("**⚠️ Technical Concerns:**")
+                        tech_concerns = [c for c in guidance['key_concerns'] if any(word in c.lower() for word in ['certainty', 'speculation', 'evidence', 'fact', 'claim'])]
+                        for concern in (tech_concerns or guidance['key_concerns'])[:3]:
+                            st.warning(f"• {concern}")
+                
+                with col2:
+                    if guidance.get('critical_questions'):
+                        st.markdown("**❓ Evidence Questions:**")
+                        evidence_questions = [q for q in guidance['critical_questions'] if any(word in q.lower() for word in ['evidence', 'prove', 'fact', 'claim', 'certain'])]
+                        for question in (evidence_questions or guidance['critical_questions'])[:3]:
+                            st.info(f"• {question}")
+    
+    # === OVERALL READER GUIDANCE ===
+    # Note: Tab-specific guidance is now shown within each tab
+    # This section shows overall guidance that applies to all aspects
+    if result.get('reader_guidance'):
+        st.markdown("### 🧭 Overall Analysis Summary")
+        
+        guidance = result['reader_guidance']
+        
+        # Show only the most general, overarching guidance here
+        if guidance.get('key_concerns'):
+            general_concerns = [c for c in guidance['key_concerns'] if not any(word in c.lower() for word in ['language', 'emotion', 'framing', 'context', 'certainty'])]
+            if general_concerns:
+                st.markdown("**⚠️ Overall Key Concerns:**")
+                for concern in general_concerns[:2]:
+                    st.warning(f"• {concern}")
+        
+        # Show publication context and overall source reliability
+        if guidance.get('suggested_sources'):
+            general_sources = [s for s in guidance['suggested_sources'] if not any(word in s.lower() for word in ['perspective', 'framing', 'context', 'background'])]
+            if general_sources:
+                st.markdown("**🔍 Additional Sources for Verification:**")
+                for source in general_sources[:2]:
+                    st.markdown(f"• {source}")
+    
+    # === EXPLAINABILITY & NEUTRALITY ===
+    if result.get('explainability'):
+        st.markdown("### 🛠️ Transparency & Improvement Suggestions")
+        
+        explainability = result['explainability']
+        
+        # Bias evidence
+        if explainability.get('bias_evidence'):
+            with st.expander("📋 Specific Evidence of Bias"):
+                for evidence in explainability['bias_evidence']:
+                    if isinstance(evidence, str):
+                        st.markdown(f"• {evidence}")
+                    else:
+                        st.markdown(f"• {evidence.get('text', 'Unknown evidence')}")
+        
+        # Neutrality suggestions
+        if explainability.get('neutrality_suggestions'):
+            with st.expander("✏️ How to Make This More Neutral"):
+                for suggestion in explainability['neutrality_suggestions']:
+                    st.info(f"💡 {suggestion}")
+    
+    # === LEGACY SUPPORT ===
+    # Handle old format results for backward compatibility
+    if not result.get('detailed_analysis') and result.get('bias_indicators'):
+        st.markdown("### 🔍 Basic Bias Indicators")
         for indicator in result['bias_indicators']:
             st.markdown(f"• {indicator}")
     
-    # Emotional language
-    if result.get('emotional_language'):
-        st.markdown("**😤 Emotional Language:**")
-        for emotion in result['emotional_language']:
-            st.markdown(f"• {emotion}")
+    if not result.get('reader_guidance') and result.get('recommendations'):
+        st.markdown("### 💡 Interpretation Guide")
+        st.info(result['recommendations'])
+
+
+def highlight_biased_text(original_text: str, biased_phrases: list, max_length: int = 2000) -> str:
+    """Create HTML highlighted version of text showing biased phrases"""
     
-    # Recommendations
-    if result.get('recommendations'):
-        st.markdown('<div class="bias-box">', unsafe_allow_html=True)
-        st.markdown(f"**💡 Interpretation Guide:** {result['recommendations']}")
-        st.markdown('</div>', unsafe_allow_html=True)
+    # Limit text length for display
+    display_text = original_text[:max_length]
+    if len(original_text) > max_length:
+        display_text += "..."
+    
+    highlighted_text = display_text
+    
+    # Color mapping for different bias types
+    color_map = {
+        'emotional': '#ffcccc',      # Light red
+        'negative_political': '#ffdddd',
+        'positive_political': '#ddffdd',
+        'negative_moral': '#ffe6e6',
+        'positive_moral': '#e6ffe6',
+        'anger': '#ff9999',
+        'fear': '#ffcc99',
+        'moral_outrage': '#ff6666',
+        'contempt': '#cc99ff'
+    }
+    
+    # Sort phrases by length (longest first) to avoid nested highlighting issues
+    sorted_phrases = sorted(biased_phrases, key=lambda x: len(x.get('text', '') if isinstance(x, dict) else str(x)), reverse=True)
+    
+    for phrase_info in sorted_phrases[:20]:  # Limit to prevent performance issues
+        if isinstance(phrase_info, dict):
+            phrase = phrase_info.get('text', '')
+            bias_type = phrase_info.get('bias_type', 'emotional')
+            intensity = phrase_info.get('intensity', 5)
+        else:
+            phrase = str(phrase_info)
+            bias_type = 'emotional'
+            intensity = 5
+        
+        if phrase and phrase in highlighted_text:
+            # Use color based on bias type, intensity affects opacity
+            color = color_map.get(bias_type, '#ffcccc')
+            opacity = min(0.9, 0.3 + (intensity * 0.1))  # Range 0.3 to 0.9
+            
+            # Create highlighted version
+            highlighted_phrase = f'<mark style="background-color: {color}; opacity: {opacity}; padding: 2px 4px; border-radius: 3px;" title="{bias_type} (intensity: {intensity})">{phrase}</mark>'
+            highlighted_text = highlighted_text.replace(phrase, highlighted_phrase, 1)  # Replace only first occurrence
+    
+    return highlighted_text
+
+
+def display_highlighted_text(original_text: str, result: dict):
+    """Display original text with bias highlighting"""
+    
+    if not result.get('detailed_analysis', {}).get('biased_phrases'):
+        return
+    
+    st.markdown("### 🎨 Text Visualization")
+    st.markdown("*Biased phrases are highlighted. Hover over highlights to see bias type and intensity.*")
+    
+    biased_phrases = result['detailed_analysis']['biased_phrases']
+    highlighted_html = highlight_biased_text(original_text, biased_phrases)
+    
+    # Display in a styled container
+    st.markdown(
+        f"""
+        <div style="
+            border: 1px solid #ddd; 
+            border-radius: 8px; 
+            padding: 15px; 
+            background-color: #fafafa; 
+            max-height: 400px; 
+            overflow-y: auto;
+            line-height: 1.6;
+            font-family: 'Arial', sans-serif;
+        ">
+            {highlighted_html}
+        </div>
+        """, 
+        unsafe_allow_html=True
+    )
+    
+    # Add legend
+    st.markdown("**Legend:**")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown('<span style="background-color: #ffcccc; padding: 2px 8px; border-radius: 3px;">Emotional Language</span>', unsafe_allow_html=True)
+        st.markdown('<span style="background-color: #ff9999; padding: 2px 8px; border-radius: 3px;">High Intensity</span>', unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown('<span style="background-color: #ffdddd; padding: 2px 8px; border-radius: 3px;">Political Language</span>', unsafe_allow_html=True)
+        st.markdown('<span style="background-color: #ffe6e6; padding: 2px 8px; border-radius: 3px;">Moral Language</span>', unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown("💡 *Darker colors = Higher intensity*")
+        st.markdown("🎯 *Hover over highlights for details*")
 
 
 def display_comparison_results(result):
@@ -566,6 +908,28 @@ def main():
                     except Exception as e:
                         st.error(f"Error reading file: {str(e)}")
             
+            # Additional metadata for enhanced bias analysis
+            if analysis_mode in ["Bias Analysis", "Full Report"]:
+                st.markdown("### 📋 Article Metadata (Optional - Enhances Bias Analysis)")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    article_title = st.text_input(
+                        "Article Title",
+                        placeholder="Enter the article headline/title",
+                        help="Helps with contextual analysis"
+                    )
+                
+                with col2:
+                    source_url = st.text_input(
+                        "Source URL or Domain",
+                        placeholder="e.g., cnn.com, foxnews.com, reuters.com",
+                        help="Enables source bias profiling and publisher context"
+                    )
+            else:
+                article_title = None
+                source_url = None
+            
             # Analysis button
             analysis_label = {
                 "Single Summary": "📝 Generate Summary",
@@ -590,16 +954,17 @@ def main():
                             
                             # Perform analysis based on mode
                             if analysis_mode == "Single Summary":
-                                result = engine.analyze_single_article(text_content, mode='summary')
+                                result = engine.analyze_single_article(text_content, mode='summary', source_url=source_url, article_title=article_title)
                             elif analysis_mode == "Bias Analysis":
-                                result = engine.analyze_single_article(text_content, mode='bias')
+                                result = engine.analyze_single_article(text_content, mode='bias', source_url=source_url, article_title=article_title)
                             elif analysis_mode == "Full Report":
-                                result = engine.analyze_single_article(text_content, mode='full')
+                                result = engine.analyze_single_article(text_content, mode='full', source_url=source_url, article_title=article_title)
                             
                             # Store results
                             st.session_state.last_results = {
                                 'type': analysis_mode,
-                                'data': result
+                                'data': result,
+                                'original_text': text_content  # Store original text for highlighting
                             }
                             
                             # Save to file if requested
@@ -625,11 +990,17 @@ def main():
                     format_summary_display(result_data)
                 elif result_type == "Bias Analysis":
                     display_bias_analysis(result_data)
+                    # Add highlighted text visualization for bias analysis
+                    if st.session_state.last_results.get('original_text'):
+                        display_highlighted_text(st.session_state.last_results['original_text'], result_data)
                 elif result_type == "Full Report":
                     if result_data.get('summary'):
                         format_summary_display(result_data['summary'])
                     if result_data.get('bias_analysis'):
                         display_bias_analysis(result_data['bias_analysis'])
+                        # Add highlighted text visualization for full report bias analysis
+                        if st.session_state.last_results.get('original_text'):
+                            display_highlighted_text(st.session_state.last_results['original_text'], result_data['bias_analysis'])
                 
                 # Export options
                 st.markdown("---")
