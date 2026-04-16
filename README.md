@@ -1,13 +1,21 @@
-# Text Summarizer
+# Article Analysis System
 
-A powerful tool for summarizing text using AI models, available as both a **web interface** and **command-line tool**. Supports multiple AI providers (OpenAI, Anthropic) and local processing for privacy-conscious users.
+A comprehensive tool for advanced text analysis, available as both a **web interface** and **command-line tool**. Features summarization, bias detection, multi-article comparison, and neutral synthesis using AI models.
 
 ## Features
 
-- 📝 **Multiple input methods**: File, direct text, or stdin
+### 🎯 Analysis Modes
+- 📝 **Single Summarization**: Concise summaries with key points and action items
+- 🎯 **Bias Detection**: Political/ideological bias analysis with confidence scores  
+- 🔄 **Multi-Article Comparison**: Side-by-side comparison of multiple sources
+- 🔗 **Neutral Synthesis**: Balanced synthesis from multiple articles
+- 📊 **Full Reports**: Comprehensive analysis combining all modes
+
+### 💻 Technical Features  
+- 🌐 **Modern Web Interface**: Intuitive Streamlit-based UI with tabs and modes
+- 📄 **Multiple input methods**: File upload, direct text, or multi-article management
 - 🤖 **Multiple AI providers**: OpenAI GPT, Anthropic Claude, or local processing
-- 📊 **Structured output**: Short summary, key bullet points, and action items
-- 💾 **Save results**: Automatic file saving with timestamps
+- 💾 **Export options**: Download as text, JSON, with automatic file saving
 - ⚙️ **Configurable**: Environment variables or config file setup
 - 🔒 **Privacy options**: Local processing mode requires no API keys
 
@@ -50,17 +58,23 @@ A powerful tool for summarizing text using AI models, available as both a **web 
 
 ## Quick Start
 
-### 🌐 Web Interface (Recommended for Beginners)
+### 🌐 Web Interface (Recommended)
 
 ```bash
-# Install dependencies
+# Install dependencies (if not already done)
 pip install streamlit
 
-# Launch the web interface
+# Launch the Article Analysis System
 streamlit run app.py
 ```
 
-Then open your browser to the URL shown (typically `http://localhost:8501`) and enjoy the intuitive web interface!
+Then open your browser to the URL shown (typically `http://localhost:8501`) and enjoy:
+
+- **Single Article Analysis**: Summarization, bias detection, or full reports
+- **Multi-Article Analysis**: Compare sources or generate neutral synthesis  
+- **Five Analysis Modes**: Choose your analysis type from the sidebar
+- **Multiple Input Methods**: Direct text, file upload, or multi-article management
+- **Export Options**: Download results as text or JSON
 
 ### 💻 Command Line Interface
 

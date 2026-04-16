@@ -361,3 +361,408 @@ class TextSummarizer:
             print("Summary generated successfully")
         
         return result
+
+
+# =============================================================================
+# EXTENDED ANALYSIS CAPABILITIES
+# =============================================================================
+
+class BaseAnalyzer(ABC):
+    """Abstract base class for text analysis beyond summarization"""
+    
+    @abstractmethod
+    def analyze(self, text: str) -> Dict[str, Any]:
+        """Perform analysis on the text"""
+        pass
+
+
+class BiasAnalyzer:
+    """Analyzes political and ideological bias in text"""
+    
+    def __init__(self, summarizer_instance: BaseSummarizer):
+        self.summarizer = summarizer_instance
+    
+    def analyze_bias(self, text: str) -> Dict[str, Any]:
+        """Analyze bias using the configured AI model"""
+        
+        bias_prompt = f"""
+Analyze the following article for political and ideological bias. Provide:
+
+1. Overall bias score (-10 to +10, where -10 is extremely left-leaning, 0 is neutral, +10 is extremely right-leaning)
+2. Confidence level (0-100%)
+3. Specific indicators of bias found
+4. Emotional language detection
+5. Source credibility assessment
+
+Format as JSON:
+{{
+    "bias_score": 0,
+    "confidence": 85,
+    "bias_direction": "neutral|left-leaning|right-leaning",
+    "bias_indicators": ["indicator1", "indicator2"],
+    "emotional_language": ["examples of emotional language"],
+    "objectivity_score": 75,
+    "recommendations": "How to interpret this article"
+}}
+
+Article text:
+{text[:3000]}"""  # Limit text to avoid token limits
+        
+        if hasattr(self.summarizer, 'client'):  # OpenAI or Anthropic
+            try:
+                if hasattr(self.summarizer, 'model'):  # OpenAI
+                    response = self.summarizer.client.chat.completions.create(
+                        model=self.summarizer.model,
+                        messages=[{"role": "user", "content": bias_prompt}],
+                        temperature=0.3
+                    )
+                    return self._parse_bias_response(response.choices[0].message.content)
+                else:  # Anthropic
+                    response = self.summarizer.client.messages.create(
+                        model=self.summarizer.model,
+                        messages=[{"role": "user", "content": bias_prompt}],
+                        max_tokens=1000,
+                        temperature=0.3
+                    )
+                    return self._parse_bias_response(response.content[0].text)
+            except Exception as e:
+                return {"error": f"AI analysis failed: {str(e)}"}
+        else:  # Local analyzer
+            return self._local_bias_analysis(text)
+    
+    def _parse_bias_response(self, response: str) -> Dict[str, Any]:
+        """Parse AI response for bias analysis"""
+        try:
+            # Try JSON parsing first
+            json_start = response.find('{')
+            json_end = response.rfind('}') + 1
+            if json_start != -1 and json_end != 0:
+                json_str = response[json_start:json_end]
+                return json.loads(json_str)
+        except:
+            pass
+        
+        # Fallback: manual parsing
+        return {
+            "bias_score": 0,
+            "confidence": 50,
+            "bias_direction": "neutral",
+            "bias_indicators": ["Analysis format error"],
+            "emotional_language": [],
+            "objectivity_score": 50,
+            "recommendations": "Could not analyze - please try again"
+        }
+    
+    def _local_bias_analysis(self, text: str) -> Dict[str, Any]:
+        """Simple local bias analysis using keyword detection"""
+        
+        left_indicators = ['progressive', 'social justice', 'inequality', 'climate change', 
+                          'universal healthcare', 'wealth redistribution']
+        right_indicators = ['conservative', 'traditional values', 'free market', 'fiscal responsibility',
+                           'strong defense', 'law and order']
+        emotional_words = ['outrageous', 'shocking', 'devastating', 'brilliant', 'terrible', 'amazing']
+        
+        text_lower = text.lower()
+        
+        left_count = sum(1 for word in left_indicators if word in text_lower)
+        right_count = sum(1 for word in right_indicators if word in text_lower)
+        emotional_count = sum(1 for word in emotional_words if word in text_lower)
+        
+        # Simple scoring
+        bias_score = right_count - left_count
+        bias_direction = "neutral"
+        if bias_score > 2:
+            bias_direction = "right-leaning"
+        elif bias_score < -2:
+            bias_direction = "left-leaning"
+        
+        return {
+            "bias_score": max(-10, min(10, bias_score)),
+            "confidence": 60,
+            "bias_direction": bias_direction,
+            "bias_indicators": [f"Left indicators: {left_count}, Right indicators: {right_count}"],
+            "emotional_language": [f"Emotional words found: {emotional_count}"],
+            "objectivity_score": max(0, 100 - emotional_count * 10),
+            "recommendations": "Local analysis - limited accuracy. Use AI models for better results."
+        }
+
+
+class ArticleComparator:
+    """Compares multiple articles on the same topic"""
+    
+    def __init__(self, summarizer_instance: BaseSummarizer):
+        self.summarizer = summarizer_instance
+    
+    def compare_articles(self, articles: List[Dict[str, str]]) -> Dict[str, Any]:
+        """Compare multiple articles and find similarities/differences"""
+        
+        if len(articles) < 2:
+            return {"error": "Need at least 2 articles for comparison"}
+        
+        # Prepare comparison prompt
+        articles_text = ""
+        for i, article in enumerate(articles, 1):
+            title = article.get('title', f'Article {i}')
+            content = article.get('content', '')[:1500]  # Limit length
+            articles_text += f"\n\n=== ARTICLE {i}: {title} ===\n{content}"
+        
+        comparison_prompt = f"""
+Compare these {len(articles)} articles and analyze:
+
+1. Main topic/theme consensus
+2. Key similarities across articles  
+3. Major differences in perspective
+4. Factual agreements and disagreements
+5. Overall credibility comparison
+6. Bias differences between sources
+
+Format as JSON:
+{{
+    "main_topic": "Common theme",
+    "similarities": ["similarity1", "similarity2"],
+    "differences": ["difference1", "difference2"], 
+    "factual_agreements": ["fact1", "fact2"],
+    "factual_disagreements": ["disagreement1", "disagreement2"],
+    "credibility_ranking": [1, 2, 3],
+    "bias_comparison": "Comparative bias analysis",
+    "recommendation": "How to interpret these sources together"
+}}
+
+Articles to compare:{articles_text}"""
+        
+        if hasattr(self.summarizer, 'client'):  # AI-powered comparison
+            try:
+                if hasattr(self.summarizer, 'model'):  # OpenAI
+                    response = self.summarizer.client.chat.completions.create(
+                        model=self.summarizer.model,
+                        messages=[{"role": "user", "content": comparison_prompt}],
+                        temperature=0.3
+                    )
+                    return self._parse_comparison_response(response.choices[0].message.content)
+                else:  # Anthropic
+                    response = self.summarizer.client.messages.create(
+                        model=self.summarizer.model,
+                        messages=[{"role": "user", "content": comparison_prompt}],
+                        max_tokens=1500,
+                        temperature=0.3
+                    )
+                    return self._parse_comparison_response(response.content[0].text)
+            except Exception as e:
+                return {"error": f"AI comparison failed: {str(e)}"}
+        else:  # Local comparison
+            return self._local_comparison(articles)
+    
+    def _parse_comparison_response(self, response: str) -> Dict[str, Any]:
+        """Parse AI response for article comparison"""
+        try:
+            json_start = response.find('{')
+            json_end = response.rfind('}') + 1
+            if json_start != -1 and json_end != 0:
+                json_str = response[json_start:json_end]
+                return json.loads(json_str)
+        except:
+            pass
+        
+        return {
+            "main_topic": "Analysis error",
+            "similarities": ["Could not analyze"],
+            "differences": ["Format error"],
+            "factual_agreements": [],
+            "factual_disagreements": [],
+            "credibility_ranking": list(range(1, len(response) + 1)),
+            "bias_comparison": "Analysis failed",
+            "recommendation": "Please try again"
+        }
+    
+    def _local_comparison(self, articles: List[Dict[str, str]]) -> Dict[str, Any]:
+        """Simple local comparison using keyword overlap"""
+        
+        # Basic keyword extraction for comparison
+        all_words = []
+        for article in articles:
+            content = article.get('content', '').lower()
+            words = re.findall(r'\b\w+\b', content)
+            all_words.extend(words)
+        
+        # Find common words (crude similarity measure)
+        word_freq = {}
+        for word in all_words:
+            if len(word) > 4:  # Filter short words
+                word_freq[word] = word_freq.get(word, 0) + 1
+        
+        common_topics = [word for word, count in word_freq.items() if count >= len(articles)]
+        
+        return {
+            "main_topic": f"Articles about: {', '.join(common_topics[:3])}",
+            "similarities": [f"Common keywords: {len(common_topics)}"],
+            "differences": ["Local analysis cannot detect nuanced differences"],
+            "factual_agreements": ["Cannot determine without AI analysis"],
+            "factual_disagreements": ["Cannot determine without AI analysis"],
+            "credibility_ranking": list(range(1, len(articles) + 1)),
+            "bias_comparison": "Use AI models for bias comparison",
+            "recommendation": "Local comparison is limited. Use AI models for detailed analysis."
+        }
+
+
+class SynthesisGenerator:
+    """Generates neutral synthesis from multiple sources"""
+    
+    def __init__(self, summarizer_instance: BaseSummarizer):
+        self.summarizer = summarizer_instance
+    
+    def generate_synthesis(self, articles: List[Dict[str, str]]) -> Dict[str, Any]:
+        """Create a neutral synthesis from multiple articles"""
+        
+        if len(articles) < 2:
+            return {"error": "Need at least 2 articles for synthesis"}
+        
+        # Prepare synthesis prompt
+        articles_text = ""
+        for i, article in enumerate(articles, 1):
+            title = article.get('title', f'Article {i}')
+            content = article.get('content', '')[:1200]  # Limit length
+            articles_text += f"\n\n=== SOURCE {i}: {title} ===\n{content}"
+        
+        synthesis_prompt = f"""
+Create a neutral, balanced synthesis from these {len(articles)} sources. Your goal is to:
+
+1. Present the most factual information from all sources
+2. Acknowledge different perspectives fairly
+3. Identify areas of consensus vs disagreement
+4. Maintain journalistic neutrality
+5. Cite which sources support each point
+
+Format as JSON:
+{{
+    "title": "Synthesis title",
+    "neutral_summary": "Balanced overview incorporating all sources",
+    "key_facts": ["Fact 1 (Sources: 1,2)", "Fact 2 (Sources: 2,3)"],
+    "different_perspectives": ["Perspective A (Source 1)", "Perspective B (Source 2)"],
+    "areas_of_consensus": ["Agreement 1", "Agreement 2"],
+    "areas_of_disagreement": ["Disagreement 1", "Disagreement 2"],
+    "confidence_assessment": "How reliable is this synthesis",
+    "limitations": "What gaps remain"
+}}
+
+Sources to synthesize:{articles_text}"""
+        
+        if hasattr(self.summarizer, 'client'):  # AI-powered synthesis
+            try:
+                if hasattr(self.summarizer, 'model'):  # OpenAI
+                    response = self.summarizer.client.chat.completions.create(
+                        model=self.summarizer.model,
+                        messages=[{"role": "user", "content": synthesis_prompt}],
+                        temperature=0.2  # Lower temperature for more factual output
+                    )
+                    return self._parse_synthesis_response(response.choices[0].message.content)
+                else:  # Anthropic
+                    response = self.summarizer.client.messages.create(
+                        model=self.summarizer.model,
+                        messages=[{"role": "user", "content": synthesis_prompt}],
+                        max_tokens=2000,
+                        temperature=0.2
+                    )
+                    return self._parse_synthesis_response(response.content[0].text)
+            except Exception as e:
+                return {"error": f"AI synthesis failed: {str(e)}"}
+        else:  # Local synthesis
+            return self._local_synthesis(articles)
+    
+    def _parse_synthesis_response(self, response: str) -> Dict[str, Any]:
+        """Parse AI response for synthesis"""
+        try:
+            json_start = response.find('{')
+            json_end = response.rfind('}') + 1
+            if json_start != -1 and json_end != 0:
+                json_str = response[json_start:json_end]
+                return json.loads(json_str)
+        except:
+            pass
+        
+        return {
+            "title": "Synthesis Error",
+            "neutral_summary": "Could not generate synthesis - please try again",
+            "key_facts": ["Analysis failed"],
+            "different_perspectives": [],
+            "areas_of_consensus": [],
+            "areas_of_disagreement": [],
+            "confidence_assessment": "Low - technical error",
+            "limitations": "Could not complete analysis"
+        }
+    
+    def _local_synthesis(self, articles: List[Dict[str, str]]) -> Dict[str, Any]:
+        """Simple local synthesis using text combination"""
+        
+        combined_content = ""
+        titles = []
+        
+        for i, article in enumerate(articles, 1):
+            title = article.get('title', f'Source {i}')
+            titles.append(title)
+            content = article.get('content', '')[:300]
+            combined_content += f" {content}"
+        
+        # Very basic synthesis
+        return {
+            "title": f"Combined Report from {len(articles)} sources",
+            "neutral_summary": f"This is a combination of {len(articles)} articles: {', '.join(titles)}. " + 
+                             combined_content[:500] + "...",
+            "key_facts": [f"Information compiled from {len(articles)} sources"],
+            "different_perspectives": [f"See original sources: {', '.join(titles)}"],
+            "areas_of_consensus": ["Cannot determine without AI analysis"],
+            "areas_of_disagreement": ["Cannot determine without AI analysis"],
+            "confidence_assessment": "Low - basic text combination only",
+            "limitations": "Local synthesis is very limited. Use AI models for quality synthesis."
+        }
+
+
+class AnalysisEngine:
+    """Main engine coordinating different analysis modes"""
+    
+    def __init__(self, model_type: str = 'openai', config=None, verbose: bool = False):
+        # Initialize base summarizer
+        self.text_summarizer = TextSummarizer(model_type, config, verbose)
+        self.base_summarizer = self.text_summarizer.summarizer
+        
+        # Initialize analysis components
+        self.bias_analyzer = BiasAnalyzer(self.base_summarizer)
+        self.comparator = ArticleComparator(self.base_summarizer)
+        self.synthesizer = SynthesisGenerator(self.base_summarizer)
+        
+        self.verbose = verbose
+    
+    def analyze_single_article(self, text: str, mode: str = 'summary') -> Dict[str, Any]:
+        """Analyze a single article in various modes"""
+        
+        if mode == 'summary':
+            return self.text_summarizer.summarize(text)
+        elif mode == 'bias':
+            return self.bias_analyzer.analyze_bias(text)
+        elif mode == 'full':
+            summary = self.text_summarizer.summarize(text)
+            bias = self.bias_analyzer.analyze_bias(text)
+            return {
+                'summary': summary,
+                'bias_analysis': bias,
+                'analysis_type': 'comprehensive'
+            }
+        else:
+            raise ValueError(f"Unknown analysis mode: {mode}")
+    
+    def analyze_multiple_articles(self, articles: List[Dict[str, str]], mode: str = 'compare') -> Dict[str, Any]:
+        """Analyze multiple articles"""
+        
+        if mode == 'compare':
+            return self.comparator.compare_articles(articles)
+        elif mode == 'synthesis':
+            return self.synthesizer.generate_synthesis(articles)
+        elif mode == 'full':
+            comparison = self.comparator.compare_articles(articles)
+            synthesis = self.synthesizer.generate_synthesis(articles)
+            return {
+                'comparison': comparison,
+                'synthesis': synthesis,
+                'analysis_type': 'comprehensive_multi'
+            }
+        else:
+            raise ValueError(f"Unknown multi-article mode: {mode}")
