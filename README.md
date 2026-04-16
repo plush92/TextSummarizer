@@ -1,6 +1,6 @@
-# Text Summarizer CLI Tool
+# Text Summarizer
 
-A powerful command-line tool for summarizing text using AI models. Supports multiple AI providers (OpenAI, Anthropic) and local processing for privacy-conscious users.
+A powerful tool for summarizing text using AI models, available as both a **web interface** and **command-line tool**. Supports multiple AI providers (OpenAI, Anthropic) and local processing for privacy-conscious users.
 
 ## Features
 
@@ -20,6 +20,14 @@ A powerful command-line tool for summarizing text using AI models. Supports mult
 
 2. **Install dependencies** (choose based on your preferred AI provider):
    ```bash
+   # Install all dependencies (includes web UI)
+   pip install -r requirements.txt
+   
+   # OR install selectively:
+   
+   # For web interface
+   pip install streamlit
+   
    # For OpenAI support
    pip install openai
    
@@ -41,6 +49,20 @@ A powerful command-line tool for summarizing text using AI models. Supports mult
    ```
 
 ## Quick Start
+
+### 🌐 Web Interface (Recommended for Beginners)
+
+```bash
+# Install dependencies
+pip install streamlit
+
+# Launch the web interface
+streamlit run app.py
+```
+
+Then open your browser to the URL shown (typically `http://localhost:8501`) and enjoy the intuitive web interface!
+
+### 💻 Command Line Interface
 
 ```bash
 # Summarize a file
