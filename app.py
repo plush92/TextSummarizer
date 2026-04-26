@@ -11,6 +11,10 @@ from datetime import datetime
 from pathlib import Path
 import json
 import traceback
+import requests
+from bs4 import BeautifulSoup
+import re
+from urllib.parse import urlparse, urljoin
 
 # Import analysis components  
 from summarizer import TextSummarizer, AnalysisEngine
@@ -24,9 +28,77 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for better styling
+# Custom CSS for better styling with dark mode compatibility
 st.markdown("""
 <style>
+    /* Dark mode detection and variables */
+    :root {
+        --success-bg: #d4edda;
+        --success-border: #c3e6cb;
+        --success-text: #155724;
+        --error-bg: #f8d7da;
+        --error-border: #f5c6cb;
+        --error-text: #721c24;
+        --info-bg: #e2f3ff;
+        --info-border: #b8daff;
+        --info-text: #004085;
+        --bias-bg: #fff3cd;
+        --bias-border: #ffeaa7;
+        --bias-text: #856404;
+        --comparison-bg: rgba(248, 249, 250, 0.8);
+        --comparison-border: #dee2e6;
+        --comparison-text: #495057;
+        --synthesis-bg: #e7f3ff;
+        --synthesis-border: #b8daff;
+        --synthesis-text: #0c5460;
+    }
+    
+    /* Dark theme overrides */
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --success-bg: rgba(40, 167, 69, 0.2);
+            --success-border: rgba(40, 167, 69, 0.4);
+            --success-text: #a3cfbb;
+            --error-bg: rgba(220, 53, 69, 0.2);
+            --error-border: rgba(220, 53, 69, 0.4);
+            --error-text: #f5c2c7;
+            --info-bg: rgba(13, 110, 253, 0.2);
+            --info-border: rgba(13, 110, 253, 0.4);
+            --info-text: #9ec5fe;
+            --bias-bg: rgba(255, 193, 7, 0.2);
+            --bias-border: rgba(255, 193, 7, 0.4);
+            --bias-text: #fff3cd;
+            --comparison-bg: rgba(108, 117, 125, 0.2);
+            --comparison-border: rgba(108, 117, 125, 0.4);
+            --comparison-text: #e9ecef;
+            --synthesis-bg: rgba(13, 202, 240, 0.2);
+            --synthesis-border: rgba(13, 202, 240, 0.4);
+            --synthesis-text: #9eeaf9;
+        }
+    }
+    
+    /* Streamlit dark mode detection */
+    [data-theme="dark"] {
+        --success-bg: rgba(40, 167, 69, 0.2);
+        --success-border: rgba(40, 167, 69, 0.4);
+        --success-text: #a3cfbb;
+        --error-bg: rgba(220, 53, 69, 0.2);
+        --error-border: rgba(220, 53, 69, 0.4);
+        --error-text: #f5c2c7;
+        --info-bg: rgba(13, 110, 253, 0.2);
+        --info-border: rgba(13, 110, 253, 0.4);
+        --info-text: #9ec5fe;
+        --bias-bg: rgba(255, 193, 7, 0.2);
+        --bias-border: rgba(255, 193, 7, 0.4);
+        --bias-text: #fff3cd;
+        --comparison-bg: rgba(108, 117, 125, 0.2);
+        --comparison-border: rgba(108, 117, 125, 0.4);
+        --comparison-text: #e9ecef;
+        --synthesis-bg: rgba(13, 202, 240, 0.2);
+        --synthesis-border: rgba(13, 202, 240, 0.4);
+        --synthesis-text: #9eeaf9;
+    }
+
     .main-header {
         font-size: 2.5rem;
         color: #1f77b4;
@@ -44,46 +116,211 @@ st.markdown("""
     .success-box {
         padding: 1rem;
         border-radius: 0.5rem;
-        background-color: #d4edda;
-        border: 1px solid #c3e6cb;
-        color: #155724;
+        background-color: var(--success-bg);
+        border: 1px solid var(--success-border);
+        color: var(--success-text);
+        backdrop-filter: blur(10px);
     }
     .error-box {
         padding: 1rem;
         border-radius: 0.5rem;
-        background-color: #f8d7da;
-        border: 1px solid #f5c6cb;
-        color: #721c24;
+        background-color: var(--error-bg);
+        border: 1px solid var(--error-border);
+        color: var(--error-text);
+        backdrop-filter: blur(10px);
     }
     .info-box {
         padding: 1rem;
         border-radius: 0.5rem;
-        background-color: #e2f3ff;
-        border: 1px solid #b8daff;
-        color: #004085;
+        background-color: var(--info-bg);
+        border: 1px solid var(--info-border);
+        color: var(--info-text);
+        backdrop-filter: blur(10px);
     }
     .bias-box {
         padding: 1rem;
         border-radius: 0.5rem;
-        background-color: #fff3cd;
-        border: 1px solid #ffeaa7;
-        color: #856404;
+        background-color: var(--bias-bg);
+        border: 1px solid var(--bias-border);
+        color: var(--bias-text);
+        backdrop-filter: blur(10px);
     }
     .comparison-box {
         padding: 1rem;
         border-radius: 0.5rem;
-        background-color: #f8f9fa;
-        border: 1px solid #dee2e6;
-        color: #495057;
+        background-color: var(--comparison-bg);
+        border: 1px solid var(--comparison-border);
+        color: var(--comparison-text);
+        backdrop-filter: blur(10px);
     }
     .synthesis-box {
         padding: 1rem;
         border-radius: 0.5rem;
-        background-color: #e7f3ff;
-        border: 1px solid #b8daff;
-        color: #0c5460;
+        background-color: var(--synthesis-bg);
+        border: 1px solid var(--synthesis-border);
+        color: var(--synthesis-text);
+        backdrop-filter: blur(10px);
+    }
+    
+    /* Additional dark mode compatibility */
+    .stAlert > div {
+        background-color: transparent !important;
+    }
+    
+    /* Ensure text visibility in all themes */
+    .comparison-box *, .synthesis-box * {
+        color: inherit !important;
     }
 </style>""", unsafe_allow_html=True)
+
+
+def fetch_article_from_url(url):
+    """
+    Fetch and extract article content from a URL using multiple methods.
+    Returns dict with 'success', 'content', 'title', 'error' keys.
+    """
+    try:
+        # Validate URL
+        parsed = urlparse(url)
+        if not all([parsed.scheme, parsed.netloc]):
+            return {
+                'success': False,
+                'error': 'Invalid URL. Please include http:// or https://',
+                'content': '',
+                'title': ''
+            }
+        
+        # Add protocol if missing
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        
+        # Set up headers to mimic a real browser
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive',
+        }
+        
+        # Fetch the webpage
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        # Try newspaper3k first (best for articles)
+        try:
+            from newspaper import Article
+            article = Article(url)
+            article.set_html(response.content)
+            article.parse()
+            
+            if article.text and len(article.text.strip()) > 100:
+                return {
+                    'success': True,
+                    'content': article.text.strip(),
+                    'title': article.title or 'Extracted Article',
+                    'error': ''
+                }
+        except ImportError:
+            pass  # newspaper3k not available, fallback to BeautifulSoup
+        except Exception:
+            pass  # newspaper3k failed, fallback to BeautifulSoup
+        
+        # Fallback to BeautifulSoup extraction
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Remove unwanted elements
+        for element in soup(['script', 'style', 'nav', 'header', 'footer', 'aside', 'advertisement']):
+            element.decompose()
+        
+        # Try to find article content using common selectors
+        content_selectors = [
+            'article', '[role="main"]', '.article-body', '.entry-content', 
+            '.post-content', '.content', '.main-content', '.article-content',
+            '.story-body', '.article-text', '.post-body'
+        ]
+        
+        article_content = ""
+        title = ""
+        
+        # Extract title
+        title_tag = soup.find('title')
+        if title_tag:
+            title = title_tag.get_text().strip()
+        
+        # Try to find article content
+        for selector in content_selectors:
+            elements = soup.select(selector)
+            if elements:
+                for element in elements:
+                    text = element.get_text(separator=' ', strip=True)
+                    if len(text) > len(article_content):
+                        article_content = text
+        
+        # If no specific selectors work, try to extract paragraphs
+        if not article_content or len(article_content) < 200:
+            paragraphs = soup.find_all('p')
+            article_content = ' '.join([p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 20])
+        
+        # Clean up the text
+        article_content = re.sub(r'\s+', ' ', article_content).strip()
+        
+        if len(article_content) < 100:
+            return {
+                'success': False,
+                'error': 'Could not extract meaningful content from this URL. The page might be behind a paywall, require JavaScript, or not contain article text.',
+                'content': article_content,
+                'title': title
+            }
+        
+        return {
+            'success': True,
+            'content': article_content,
+            'title': title or 'Extracted Article',
+            'error': ''
+        }
+        
+    except requests.exceptions.RequestException as e:
+        return {
+            'success': False,
+            'error': f'Network error: {str(e)}',
+            'content': '',
+            'title': ''
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'error': f'Error extracting content: {str(e)}',
+            'content': '',
+            'title': ''
+        }
+
+
+def validate_and_clean_url(url):
+    """Clean and validate URL input from user."""
+    if not url:
+        return None, "Please enter a URL"
+    
+    url = url.strip()
+    
+    # Remove common prefixes that users might accidentally include
+    prefixes_to_remove = ['www.', 'http://www.', 'https://www.']
+    for prefix in prefixes_to_remove:
+        if url.startswith(prefix) and not url.startswith('http'):
+            url = url[len(prefix):]
+    
+    # Add https if no protocol
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    
+    # Basic URL validation
+    try:
+        parsed = urlparse(url)
+        if not all([parsed.scheme, parsed.netloc]):
+            return None, "Invalid URL format"
+        return url, None
+    except Exception:
+        return None, "Invalid URL format"
 
 
 def initialize_session_state():
@@ -277,7 +514,32 @@ def display_bias_analysis(result):
         st.error(f"Bias analysis failed: {result.get('error', 'Unknown error')}")
         return
     
+    # Methodology explanation header
     st.markdown('<div class="section-header">🎯 Enhanced Bias Analysis</div>', unsafe_allow_html=True)
+    
+    # Add methodology explanation
+    with st.expander("📚 What is Bias Analysis?", expanded=False):
+        st.markdown("""
+        **Bias Analysis** examines text for systematic prejudices, unfair representations, or one-sided perspectives using multiple detection methods:
+        
+        **🔍 What We Analyze:**
+        - **Language Bias**: Loaded words, emotional manipulation, selective terminology
+        - **Framing Bias**: How topics are presented, what's emphasized vs. minimized
+        - **Omission Bias**: Missing context, incomplete information, ignored perspectives
+        - **Source Bias**: Publisher reputation, author credibility, institutional leanings
+        
+        **📊 Scoring System:**
+        - **-10 to -3**: Strong left-leaning bias
+        - **-2 to +2**: Relatively neutral/balanced
+        - **+3 to +10**: Strong right-leaning bias
+        - **Confidence**: How certain the analysis is (60%+ is reliable)
+        
+        **🎯 Methodology:**
+        1. **Lexical Analysis**: Scans for biased terminology and emotional language
+        2. **Contextual Evaluation**: Examines framing, missing information, and perspective balance
+        3. **Source Assessment**: Considers publisher reputation and credibility indicators
+        4. **Pattern Recognition**: Identifies systematic trends in language and presentation
+        """)
     
     # Handle both old and new format
     overall_score = result.get('overall_bias_score', result.get('bias_score', 0))
@@ -361,23 +623,26 @@ def display_bias_analysis(result):
         tab1, tab2, tab3, tab4 = st.tabs(["🗣️ Language & Emotion", "🎭 Framing Issues", "❓ Missing Context", "📊 Technical Analysis"])
         
         with tab1:
+            st.info("**📝 Focus**: This tab analyzes word choice, emotional tone, and persuasive language techniques.")
+            
             # Biased phrases and emotional analysis
             col1, col2 = st.columns(2)
             
             with col1:
-                st.markdown("**🚨 Biased Phrases Detected:**")
+                st.markdown('<div class="bias-box"><h4>🚨 Biased Phrases Detected</h4>', unsafe_allow_html=True)
                 if detailed.get('biased_phrases'):
-                    for phrase in detailed['biased_phrases'][:10]:  # Limit display
+                    for phrase in detailed['biased_phrases'][:8]:  # Limit display
                         if isinstance(phrase, dict):
                             intensity_color = "🔴" if phrase.get('intensity', 0) > 7 else "🟡" if phrase.get('intensity', 0) > 4 else "🟢"
-                            st.markdown(f"{intensity_color} **\"{phrase.get('text', '')}\"** - {phrase.get('bias_type', 'unknown')} (intensity: {phrase.get('intensity', 0)}/10)")
+                            st.markdown(f"{intensity_color} **\"{phrase.get('text', '')}\"**<br>↳ {phrase.get('bias_type', 'unknown')} (intensity: {phrase.get('intensity', 0)}/10)", unsafe_allow_html=True)
                         else:
                             st.markdown(f"• {phrase}")
                 else:
-                    st.success("No significantly biased phrases detected")
+                    st.success("✅ No significantly biased phrases detected")
+                st.markdown('</div>', unsafe_allow_html=True)
             
             with col2:
-                st.markdown("**😤 Emotional Analysis:**")
+                st.markdown('<div class="info-box"><h4>😤 Emotional Analysis</h4>', unsafe_allow_html=True)
                 emotion_analysis = detailed.get('emotion_analysis', {})
                 
                 dominant_tone = emotion_analysis.get('dominant_tone', 'neutral')
@@ -387,34 +652,27 @@ def display_bias_analysis(result):
                 
                 if emotion_analysis.get('emotional_targets'):
                     st.markdown("**Emotional targets:**")
-                    for target in emotion_analysis['emotional_targets'][:5]:
+                    for target in emotion_analysis['emotional_targets'][:4]:
                         st.markdown(f"• {target}")
                 
                 author_vs_quoted = emotion_analysis.get('author_vs_quoted', 'unknown')
                 if author_vs_quoted != 'unknown':
                     st.markdown(f"**Source of emotion:** {author_vs_quoted}")
+                st.markdown('</div>', unsafe_allow_html=True)
             
-            # Tab-specific Reader Guidance for Language & Emotion
-            if result.get('reader_guidance'):
-                st.markdown("---")
-                st.markdown("### 🧭 Language Analysis Guidance")
-                guidance = result['reader_guidance']
-                
-                if guidance.get('key_concerns'):
-                    st.markdown("**⚠️ Key Language Concerns:**")
-                    language_concerns = [c for c in guidance['key_concerns'] if any(word in c.lower() for word in ['language', 'emotion', 'tone', 'phrase', 'word'])]
-                    for concern in language_concerns[:3]:
-                        st.warning(f"• {concern}")
-                
-                if guidance.get('critical_questions'):
-                    st.markdown("**❓ Questions About Language Use:**")
-                    language_questions = [q for q in guidance['critical_questions'] if any(word in q.lower() for word in ['language', 'emotion', 'tone', 'phrase', 'word'])]
-                    for question in language_questions[:3]:
-                        st.info(f"• {question}")
+            # Language-specific tips
+            st.markdown("**💡 What This Means:**")
+            st.markdown("""
+            - **High-intensity phrases** suggest strong bias or emotional manipulation
+            - **Emotional targets** show who/what the article seeks to make you feel about
+            - **Neutral tone** with varied perspectives suggests balanced reporting
+            """)
         
         with tab2:
+            st.info("**📝 Focus**: This tab examines how topics are presented, what's emphasized vs. minimized, and perspective balance.")
+            
             # Framing issues
-            st.markdown("**🎭 Framing Analysis:**")
+            st.markdown('<div class="comparison-box"><h4>🎭 Framing Analysis</h4>', unsafe_allow_html=True)
             
             if detailed.get('framing_issues'):
                 for issue in detailed['framing_issues']:
@@ -423,114 +681,147 @@ def display_bias_analysis(result):
                     else:
                         st.warning(f"• {issue}")
             else:
-                st.success("No significant framing issues detected")
+                st.success("✅ No significant framing issues detected")
             
-            # Tab-specific Reader Guidance for Framing
-            if result.get('reader_guidance'):
-                st.markdown("---")
-                st.markdown("### 🧭 Framing Analysis Guidance")
-                guidance = result['reader_guidance']
-                
-                if guidance.get('alternative_framings'):
-                    st.markdown("**🔄 Alternative Perspectives to Consider:**")
-                    for framing in guidance['alternative_framings'][:4]:
-                        st.success(f"• {framing}")
-                
-                if guidance.get('suggested_sources'):
-                    st.markdown("**🔍 Sources for Different Framings:**")
-                    framing_sources = [s for s in guidance['suggested_sources'] if any(word in s.lower() for word in ['perspective', 'view', 'angle', 'frame'])]
-                    for source in (framing_sources or guidance['suggested_sources'])[:3]:
-                        st.markdown(f"• {source}")
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Alternative perspectives section - unique to this tab
+            if result.get('reader_guidance', {}).get('alternative_framings'):
+                st.markdown('<div class="success-box"><h4>🔄 Alternative Perspectives to Consider</h4>', unsafe_allow_html=True)
+                for framing in result['reader_guidance']['alternative_framings'][:4]:
+                    st.markdown(f"• {framing}")
+                st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Framing-specific tips
+            st.markdown("**💡 What This Means:**")
+            st.markdown("""
+            - **Framing** shapes how you interpret events before you even form an opinion
+            - **Multiple perspectives** on the same facts can be equally valid
+            - **Balanced articles** acknowledge complexity and competing viewpoints
+            """)
         
         with tab3:
+            st.info("**📝 Focus**: This tab identifies missing background information, omitted facts, and incomplete narratives.")
+            
             # Missing context
-            st.markdown("**❓ Missing Context Detection:**")
+            st.markdown('<div class="error-box"><h4>❓ Missing Context Detection</h4>', unsafe_allow_html=True)
             
             if detailed.get('missing_context'):
                 for context in detailed['missing_context']:
-                    st.warning(f"⚠️ {context}")
+                    st.markdown(f"⚠️ {context}")
             else:
-                st.success("No obvious missing context detected")
+                st.success("✅ No obvious missing context detected")
             
-            # Tab-specific Reader Guidance for Missing Context
-            if result.get('reader_guidance'):
-                st.markdown("---")
-                st.markdown("### 🧭 Context Analysis Guidance")
-                guidance = result['reader_guidance']
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Critical questions section - unique to this tab
+            if result.get('reader_guidance', {}).get('critical_questions'):
+                st.markdown('<div class="info-box"><h4>❓ Important Questions to Ask</h4>', unsafe_allow_html=True)
+                # Filter for context-related questions
+                all_questions = result['reader_guidance']['critical_questions']
+                context_questions = [q for q in all_questions if any(word in q.lower() for word in ['context', 'background', 'history', 'why', 'what', 'when', 'where'])]
                 
-                if guidance.get('critical_questions'):
-                    st.markdown("**❓ Important Context Questions:**")
-                    context_questions = [q for q in guidance['critical_questions'] if any(word in q.lower() for word in ['context', 'background', 'history', 'why', 'what'])]
-                    for question in (context_questions or guidance['critical_questions'])[:4]:
-                        st.info(f"• {question}")
-                
-                if guidance.get('suggested_sources'):
-                    st.markdown("**📚 Sources for Additional Context:**")
-                    context_sources = [s for s in guidance['suggested_sources'] if any(word in s.lower() for word in ['context', 'background', 'history'])]
-                    for source in (context_sources or guidance['suggested_sources'])[:3]:
-                        st.markdown(f"• {source}")
+                for question in (context_questions or all_questions)[:5]:
+                    st.markdown(f"• {question}")
+                st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Context-specific tips
+            st.markdown("**💡 What This Means:**")
+            st.markdown("""
+            - **Missing context** can make stories misleading even if facts are accurate
+            - **Background information** helps you understand why events matter
+            - **Complete stories** include historical context, multiple stakeholders, and consequences
+            """)
         
         with tab4:
+            st.info("**📝 Focus**: This tab analyzes factual certainty, evidence strength, and claims vs. speculation.")
+            
             # Technical analysis
             modality = detailed.get('modality_analysis', {})
             
-            st.markdown("**📊 Certainty vs Speculation Analysis:**")
+            col1, col2 = st.columns(2)
             
-            certainty_level = modality.get('certainty_level', 'unknown')
-            certainty_color = {"high": "🔴", "medium": "🟡", "low": "🟢", "unknown": "⚪"}.get(certainty_level, "⚪")
-            
-            st.markdown(f"**Certainty Level:** {certainty_color} {certainty_level.title()}")
-            st.markdown(f"**Assertion Strength:** {modality.get('assertion_strength', 'unknown').title()}")
-            
-            if modality.get('speculation_markers'):
-                st.markdown("**Speculation markers found:**")
-                st.code(", ".join(modality['speculation_markers'][:10]))
-            
-            # Tab-specific Reader Guidance for Technical Analysis
-            if result.get('reader_guidance'):
-                st.markdown("---")
-                st.markdown("### 🧭 Technical Analysis Guidance")
-                guidance = result['reader_guidance']
+            with col1:
+                st.markdown('<div class="synthesis-box"><h4>📊 Certainty Analysis</h4>', unsafe_allow_html=True)
                 
-                col1, col2 = st.columns(2)
+                certainty_level = modality.get('certainty_level', 'unknown')
+                certainty_color = {"high": "🔴", "medium": "🟡", "low": "🟢", "unknown": "⚪"}.get(certainty_level, "⚪")
                 
-                with col1:
-                    if guidance.get('key_concerns'):
-                        st.markdown("**⚠️ Technical Concerns:**")
-                        tech_concerns = [c for c in guidance['key_concerns'] if any(word in c.lower() for word in ['certainty', 'speculation', 'evidence', 'fact', 'claim'])]
-                        for concern in (tech_concerns or guidance['key_concerns'])[:3]:
-                            st.warning(f"• {concern}")
+                st.markdown(f"**Certainty Level:** {certainty_color} {certainty_level.title()}")
+                st.markdown(f"**Assertion Strength:** {modality.get('assertion_strength', 'unknown').title()}")
                 
-                with col2:
-                    if guidance.get('critical_questions'):
-                        st.markdown("**❓ Evidence Questions:**")
-                        evidence_questions = [q for q in guidance['critical_questions'] if any(word in q.lower() for word in ['evidence', 'prove', 'fact', 'claim', 'certain'])]
-                        for question in (evidence_questions or guidance['critical_questions'])[:3]:
-                            st.info(f"• {question}")
+                if modality.get('speculation_markers'):
+                    st.markdown("**Speculation markers found:**")
+                    markers_text = ", ".join(modality['speculation_markers'][:8])
+                    st.code(markers_text, language=None)
+                
+                st.markdown('</div>', unsafe_allow_html=True)
+            
+            with col2:
+                st.markdown('<div class="comparison-box"><h4>🔍 Evidence Assessment</h4>', unsafe_allow_html=True)
+                
+                # Show source reliability if available
+                source_context = result.get('source_context', 'Unknown source')
+                st.markdown(f"**Source:** {source_context}")
+                
+                # Show confidence level
+                confidence = result.get('confidence_level', result.get('confidence', 0))
+                confidence_color = "🟢" if confidence > 80 else "🟡" if confidence > 60 else "🔴"
+                st.markdown(f"**Analysis Confidence:** {confidence_color} {confidence}%")
+                
+                # Show evidence quality indicators
+                if result.get('explainability', {}).get('bias_evidence'):
+                    evidence_count = len(result['explainability']['bias_evidence'])
+                    st.markdown(f"**Evidence Points Found:** {evidence_count}")
+                
+                st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Technical-specific tips
+            st.markdown("**💡 What This Means:**")
+            st.markdown("""
+            - **High certainty** with weak evidence suggests overconfidence or bias
+            - **Speculation markers** ("might", "could", "possibly") indicate uncertainty
+            - **Strong evidence** includes data, expert sources, and verifiable facts
+            """)
     
-    # === OVERALL READER GUIDANCE ===
-    # Note: Tab-specific guidance is now shown within each tab
-    # This section shows overall guidance that applies to all aspects
-    if result.get('reader_guidance'):
-        st.markdown("### 🧭 Overall Analysis Summary")
+    # === ACTIONABLE RECOMMENDATIONS ===
+    if result.get('reader_guidance') or result.get('explainability'):
+        st.markdown("### 🎯 Key Takeaways & Next Steps")
         
-        guidance = result['reader_guidance']
+        col1, col2 = st.columns(2)
         
-        # Show only the most general, overarching guidance here
-        if guidance.get('key_concerns'):
-            general_concerns = [c for c in guidance['key_concerns'] if not any(word in c.lower() for word in ['language', 'emotion', 'framing', 'context', 'certainty'])]
-            if general_concerns:
-                st.markdown("**⚠️ Overall Key Concerns:**")
-                for concern in general_concerns[:2]:
-                    st.warning(f"• {concern}")
+        with col1:
+            st.markdown('<div class="success-box"><h4>✅ What to Do</h4>', unsafe_allow_html=True)
+            
+            # Show neutrality suggestions if available
+            if result.get('explainability', {}).get('neutrality_suggestions'):
+                st.markdown("**To get more balanced information:**")
+                for suggestion in result['explainability']['neutrality_suggestions'][:3]:
+                    st.markdown(f"• {suggestion}")
+            else:
+                st.markdown("""
+                • Seek additional sources with different perspectives
+                • Look for primary sources and original documents  
+                • Check if competing viewpoints are fairly represented
+                """)
+            
+            st.markdown('</div>', unsafe_allow_html=True)
         
-        # Show publication context and overall source reliability
-        if guidance.get('suggested_sources'):
-            general_sources = [s for s in guidance['suggested_sources'] if not any(word in s.lower() for word in ['perspective', 'framing', 'context', 'background'])]
-            if general_sources:
-                st.markdown("**🔍 Additional Sources for Verification:**")
-                for source in general_sources[:2]:
+        with col2:
+            st.markdown('<div class="info-box"><h4>📚 Recommended Sources</h4>', unsafe_allow_html=True)
+            
+            if result.get('reader_guidance', {}).get('suggested_sources'):
+                for source in result['reader_guidance']['suggested_sources'][:4]:
                     st.markdown(f"• {source}")
+            else:
+                st.markdown("""
+                • Fact-checking sites (Snopes, FactCheck.org, PolitiFact)
+                • Primary sources (government data, research papers)
+                • News aggregators showing multiple perspectives
+                • Subject matter experts on social media/blogs
+                """)
+            
+            st.markdown('</div>', unsafe_allow_html=True)
     
     # === EXPLAINABILITY & NEUTRALITY ===
     if result.get('explainability'):
@@ -878,7 +1169,7 @@ def main():
             
             input_method = st.radio(
                 "Choose input method:",
-                ["Direct Text Input", "File Upload"],
+                ["Direct Text Input", "File Upload", "URL Input"],
                 horizontal=True
             )
             
@@ -890,7 +1181,7 @@ def main():
                     height=300,
                     placeholder="Paste your article text here for analysis..."
                 )
-            else:
+            elif input_method == "File Upload":
                 uploaded_file = st.file_uploader(
                     "Choose a text file",
                     type=['txt', 'md', 'py', 'js', 'html', 'css', 'json'],
@@ -907,6 +1198,54 @@ def main():
                             
                     except Exception as e:
                         st.error(f"Error reading file: {str(e)}")
+            else:  # URL Input
+                url_input = st.text_input(
+                    "Enter article URL:",
+                    placeholder="https://example.com/article or example.com/article",
+                    help="Enter the URL of the article you want to analyze"
+                )
+                
+                if url_input:
+                    # Clean and validate URL
+                    clean_url, error = validate_and_clean_url(url_input)
+                    
+                    if error:
+                        st.error(error)
+                        text_content = ""
+                    else:
+                        # Add a button to fetch the article
+                        if st.button("🔗 Fetch Article", type="secondary", use_container_width=True):
+                            with st.spinner("Fetching article content..."):
+                                result = fetch_article_from_url(clean_url)
+                                
+                                if result['success']:
+                                    text_content = result['content']
+                                    st.success(f"✅ Article fetched successfully!")
+                                    st.info(f"**Title:** {result['title']}")
+                                    
+                                    # Show preview
+                                    with st.expander("📋 Article Preview"):
+                                        st.text(text_content[:1000] + "..." if len(text_content) > 1000 else text_content)
+                                    
+                                    # Store in session state so it persists
+                                    st.session_state['fetched_content'] = text_content
+                                    st.session_state['fetched_title'] = result['title']
+                                    st.session_state['fetched_url'] = clean_url
+                                else:
+                                    st.error(f"❌ Failed to fetch article: {result['error']}")
+                                    if result['content']:
+                                        st.warning("Partial content was extracted:")
+                                        st.text(result['content'][:500] + "...")
+                                    text_content = ""
+                        else:
+                            # Check if we have previously fetched content
+                            if 'fetched_content' in st.session_state:
+                                text_content = st.session_state['fetched_content']
+                                st.info(f"Using previously fetched article: **{st.session_state.get('fetched_title', 'Unknown')}**")
+                            else:
+                                text_content = ""
+                else:
+                    text_content = ""
             
             # Additional metadata for enhanced bias analysis
             if analysis_mode in ["Bias Analysis", "Full Report"]:

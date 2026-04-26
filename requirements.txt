@@ -12,6 +12,11 @@ regex>=2023.10.3
 streamlit>=1.28.0
 pandas>=2.0.0
 
+# Web scraping for URL functionality
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+newspaper3k>=0.2.8
+
 # Utilities (built-in modules, listed for reference)
 # json, os, sys, pathlib, datetime, re - all built-in
 
