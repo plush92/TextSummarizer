@@ -727,7 +727,11 @@ def setup_sidebar():
         options=[
             "Single Summary", 
             "Bias Analysis", 
-            "Source Convergence Analysis"
+            "Cross-Source BABE Comparison",
+            "Multi-Article Comparison", 
+            "Neutral Synthesis",
+            "Source Convergence Analysis",
+            "Full Report"
         ],
         help="Select the type of analysis to perform"
     )
@@ -1148,6 +1152,211 @@ def display_legacy_bias_analysis(result):
             else:
                 st.success(f"**{label}:** {score}")
 
+def add_cross_source_comparison_interface():
+    """Add interface for cross-source comparison using BABE methodology"""
+    
+    st.markdown("---")
+    st.markdown('<div class="section-header">⚖️ Cross-Source Comparison (BABE)</div>', unsafe_allow_html=True)
+    
+    with st.expander("📚 About Cross-Source Comparison", expanded=False):
+        st.markdown("""
+        **Cross-Source Comparison** analyzes 2-3 articles on the same story to identify:
+        - **Framing Differences**: How each source presents the same facts
+        - **Bias Divergences**: Relative positioning on political spectrum  
+        - **Missing Perspectives**: What each source omits or emphasizes
+        - **Consensus Points**: Facts all sources agree on
+        - **Major Disagreements**: Where sources fundamentally differ
+        
+        This helps readers understand how bias shapes news presentation and find balanced perspectives.
+        """)
+    
+    # Article input for comparison
+    st.markdown("### 📰 Add Articles for Comparison")
+    
+    # Initialize session state for comparison articles
+    if 'comparison_articles' not in st.session_state:
+        st.session_state.comparison_articles = []
+    
+    # Add new article
+    with st.form("add_comparison_article"):
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            article_url = st.text_input("Article URL", placeholder="https://example.com/article")
+            article_title = st.text_input("Article Title (Optional)", placeholder="Will be auto-detected if left blank")
+        
+        with col2:
+            st.markdown("<br>", unsafe_allow_html=True)  # Spacing
+            add_article = st.form_submit_button("➕ Add Article", use_container_width=True)
+    
+    # Handle article addition
+    if add_article and article_url:
+        with st.spinner("Fetching article content..."):
+            try:
+                article_text = fetch_article_from_url(article_url)
+                
+                # Auto-extract title if not provided
+                if not article_title.strip():
+                    article_title = extract_title_from_url(article_url)
+                
+                article_data = {
+                    'url': article_url,
+                    'title': article_title or f"Article {len(st.session_state.comparison_articles) + 1}",
+                    'text': article_text
+                }
+                
+                st.session_state.comparison_articles.append(article_data)
+                st.success(f"Added: {article_data['title']}")
+                
+            except Exception as e:
+                st.error(f"Failed to fetch article: {str(e)}")
+    
+    # Display current articles
+    if st.session_state.comparison_articles:
+        st.markdown("### 📋 Articles for Comparison")
+        
+        for i, article in enumerate(st.session_state.comparison_articles):
+            col1, col2, col3 = st.columns([3, 1, 1])
+            
+            with col1:
+                st.markdown(f"**{i+1}.** [{article['title']}]({article['url']})")
+                st.caption(f"Length: {len(article['text'].split())} words")
+            
+            with col2:
+                if st.button(f"👁️ Preview", key=f"preview_{i}"):
+                    with st.expander(f"Preview: {article['title']}", expanded=True):
+                        st.text(article['text'][:500] + "..." if len(article['text']) > 500 else article['text'])
+            
+            with col3:
+                if st.button(f"🗑️ Remove", key=f"remove_{i}"):
+                    st.session_state.comparison_articles.pop(i)
+                    st.rerun()
+        
+        # Comparison analysis button
+        if len(st.session_state.comparison_articles) >= 2:
+            if st.button("🔍 **Run Cross-Source Analysis**", use_container_width=True, type="primary"):
+                with st.spinner("Running BABE cross-source analysis..."):
+                    try:
+                        # Initialize BiasAnalyzer
+                        from summarizer import BiasAnalyzer, TextSummarizer
+                        summarizer = TextSummarizer()
+                        bias_analyzer = BiasAnalyzer(summarizer)
+                        
+                        # Run cross-source comparison
+                        comparison_result = bias_analyzer.cross_source_comparison(st.session_state.comparison_articles)
+                        
+                        # Display results
+                        display_cross_source_results(comparison_result)
+                        
+                    except Exception as e:
+                        st.error(f"Cross-source analysis failed: {str(e)}")
+        else:
+            st.info("Add at least 2 articles to run comparison analysis")
+        
+        # Clear all articles button
+        if st.button("🔄 Clear All Articles"):
+            st.session_state.comparison_articles = []
+            st.rerun()
+
+def display_cross_source_results(result):
+    """Display cross-source comparison results"""
+    
+    if result.get('error'):
+        st.error(result['error'])
+        return
+    
+    st.markdown("### 📊 Cross-Source Analysis Results")
+    
+    # Overview metrics
+    articles = result.get('articles', [])
+    divergence = result.get('divergence_analysis', {})
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        bias_range = divergence.get('bias_score_range', 0)
+        st.metric("Bias Range", f"{bias_range:.1f}", 
+                 help="Difference between most biased sources")
+    
+    with col2:
+        polarization = divergence.get('polarization_level', 'unknown')
+        color_map = {"low": "🟢", "medium": "🟡", "high": "🔴"}
+        st.metric("Polarization", polarization.title())
+        st.markdown(color_map.get(polarization, "⚪"))
+    
+    with col3:
+        consensus_count = len(result.get('consensus_points', []))
+        st.metric("Consensus Points", consensus_count)
+    
+    # Individual article analysis
+    st.markdown("### 📰 Individual Article Analysis")
+    
+    for i, article in enumerate(articles):
+        with st.expander(f"📄 {article.get('title', f'Article {i+1}')}"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                bias_score = article.get('bias_score', 0)
+                if abs(bias_score) > 2:
+                    st.error(f"**Bias Score:** {bias_score}")
+                elif abs(bias_score) > 1:
+                    st.warning(f"**Bias Score:** {bias_score}")
+                else:
+                    st.success(f"**Bias Score:** {bias_score}")
+                
+                st.markdown(f"**Source:** {article.get('source', 'Unknown')}")
+            
+            with col2:
+                st.markdown("**Key Framings:**")
+                for framing in article.get('key_framings', [])[:3]:
+                    st.markdown(f"• {framing}")
+                
+                st.markdown("**Emotional Language:**")
+                for emotion in article.get('emotional_language', [])[:3]:
+                    st.markdown(f"• {emotion}")
+    
+    # Consensus and disagreements
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("### ✅ Consensus Points")
+        consensus_points = result.get('consensus_points', [])
+        if consensus_points:
+            for point in consensus_points:
+                st.success(f"• {point}")
+        else:
+            st.info("No clear consensus points identified")
+    
+    with col2:
+        st.markdown("### ⚠️ Major Disagreements")
+        disagreements = result.get('major_disagreements', [])
+        if disagreements:
+            for disagreement in disagreements:
+                st.error(f"• {disagreement}")
+        else:
+            st.success("No major disagreements detected")
+    
+    # Recommendations
+    st.markdown("### 💡 Reader Recommendations")
+    
+    most_biased = divergence.get('most_biased', {})
+    most_neutral = divergence.get('most_neutral', {})
+    
+    if most_neutral:
+        st.success(f"**Most Balanced Source:** {most_neutral.get('title', 'Unknown')} (Score: {most_neutral.get('bias_score', 0)})")
+    
+    if most_biased:
+        st.warning(f"**Most Biased Source:** {most_biased.get('title', 'Unknown')} (Score: {most_biased.get('bias_score', 0)})")
+    
+    st.info("""
+    **💡 For Balanced Understanding:**
+    - Read the most neutral source first for baseline facts
+    - Compare how different sources frame the same events
+    - Look for information only present in one source
+    - Consider why sources emphasize different aspects
+    """)
+
+# Helper functions for cross-source comparison
 def extract_title_from_url(url):
     """Extract title from article URL (simplified)"""
     try:
@@ -1162,6 +1371,168 @@ def extract_title_from_url(url):
         
     except Exception:
         return "Untitled Article"
+            st.markdown("""
+            - **Framing** shapes how you interpret events before you even form an opinion
+            - **Multiple perspectives** on the same facts can be equally valid
+            - **Balanced articles** acknowledge complexity and competing viewpoints
+            """)
+        
+        with tab3:
+            st.info("**📝 Focus**: This tab identifies missing background information, omitted facts, and incomplete narratives.")
+            
+            # Missing context
+            st.markdown('<div class="error-box"><h4>❓ Missing Context Detection</h4>', unsafe_allow_html=True)
+            
+            if detailed.get('missing_context'):
+                for context in detailed['missing_context']:
+                    st.markdown(f"⚠️ {context}")
+            else:
+                st.success("✅ No obvious missing context detected")
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Critical questions section - unique to this tab
+            if result.get('reader_guidance', {}).get('critical_questions'):
+                st.markdown('<div class="info-box"><h4>❓ Important Questions to Ask</h4>', unsafe_allow_html=True)
+                # Filter for context-related questions
+                all_questions = result['reader_guidance']['critical_questions']
+                context_questions = [q for q in all_questions if any(word in q.lower() for word in ['context', 'background', 'history', 'why', 'what', 'when', 'where'])]
+                
+                for question in (context_questions or all_questions)[:5]:
+                    st.markdown(f"• {question}")
+                st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Context-specific tips
+            st.markdown("**💡 What This Means:**")
+            st.markdown("""
+            - **Missing context** can make stories misleading even if facts are accurate
+            - **Background information** helps you understand why events matter
+            - **Complete stories** include historical context, multiple stakeholders, and consequences
+            """)
+        
+        with tab4:
+            st.info("**📝 Focus**: This tab analyzes factual certainty, evidence strength, and claims vs. speculation.")
+            
+            # Technical analysis
+            modality = detailed.get('modality_analysis', {})
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown('<div class="synthesis-box"><h4>📊 Certainty Analysis</h4>', unsafe_allow_html=True)
+                
+                certainty_level = modality.get('certainty_level', 'unknown')
+                certainty_color = {"high": "🔴", "medium": "🟡", "low": "🟢", "unknown": "⚪"}.get(certainty_level, "⚪")
+                
+                st.markdown(f"**Certainty Level:** {certainty_color} {certainty_level.title()}")
+                st.markdown(f"**Assertion Strength:** {modality.get('assertion_strength', 'unknown').title()}")
+                
+                if modality.get('speculation_markers'):
+                    st.markdown("**Speculation markers found:**")
+                    markers_text = ", ".join(modality['speculation_markers'][:8])
+                    st.code(markers_text, language=None)
+                
+                st.markdown('</div>', unsafe_allow_html=True)
+            
+            with col2:
+                st.markdown('<div class="comparison-box"><h4>🔍 Evidence Assessment</h4>', unsafe_allow_html=True)
+                
+                # Show source reliability if available
+                source_context = result.get('source_context', 'Unknown source')
+                st.markdown(f"**Source:** {source_context}")
+                
+                # Show confidence level
+                confidence = result.get('confidence_level', result.get('confidence', 0))
+                confidence_color = "🟢" if confidence > 80 else "🟡" if confidence > 60 else "🔴"
+                st.markdown(f"**Analysis Confidence:** {confidence_color} {confidence}%")
+                
+                # Show evidence quality indicators
+                if result.get('explainability', {}).get('bias_evidence'):
+                    evidence_count = len(result['explainability']['bias_evidence'])
+                    st.markdown(f"**Evidence Points Found:** {evidence_count}")
+                
+                st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Technical-specific tips
+            st.markdown("**💡 What This Means:**")
+            st.markdown("""
+            - **High certainty** with weak evidence suggests overconfidence or bias
+            - **Speculation markers** ("might", "could", "possibly") indicate uncertainty
+            - **Strong evidence** includes data, expert sources, and verifiable facts
+            """)
+    
+    # === ACTIONABLE RECOMMENDATIONS ===
+    if result.get('reader_guidance') or result.get('explainability'):
+        st.markdown("### 🎯 Key Takeaways & Next Steps")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown('<div class="success-box"><h4>✅ What to Do</h4>', unsafe_allow_html=True)
+            
+            # Show neutrality suggestions if available
+            if result.get('explainability', {}).get('neutrality_suggestions'):
+                st.markdown("**To get more balanced information:**")
+                for suggestion in result['explainability']['neutrality_suggestions'][:3]:
+                    st.markdown(f"• {suggestion}")
+            else:
+                st.markdown("""
+                • Seek additional sources with different perspectives
+                • Look for primary sources and original documents  
+                • Check if competing viewpoints are fairly represented
+                """)
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown('<div class="info-box"><h4>📚 Recommended Sources</h4>', unsafe_allow_html=True)
+            
+            if result.get('reader_guidance', {}).get('suggested_sources'):
+                for source in result['reader_guidance']['suggested_sources'][:4]:
+                    st.markdown(f"• {source}")
+            else:
+                st.markdown("""
+                • Fact-checking sites (Snopes, FactCheck.org, PolitiFact)
+                • Primary sources (government data, research papers)
+                • News aggregators showing multiple perspectives
+                • Subject matter experts on social media/blogs
+                """)
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+    
+    # === EXPLAINABILITY & NEUTRALITY ===
+    if result.get('explainability'):
+        st.markdown("### 🛠️ Transparency & Improvement Suggestions")
+        
+        explainability = result['explainability']
+        
+        # Bias evidence
+        if explainability.get('bias_evidence'):
+            with st.expander("📋 Specific Evidence of Bias"):
+                for evidence in explainability['bias_evidence']:
+                    if isinstance(evidence, str):
+                        st.markdown(f"• {evidence}")
+                    else:
+                        st.markdown(f"• {evidence.get('text', 'Unknown evidence')}")
+        
+        # Neutrality suggestions
+        if explainability.get('neutrality_suggestions'):
+            with st.expander("✏️ How to Make This More Neutral"):
+                for suggestion in explainability['neutrality_suggestions']:
+                    st.info(f"💡 {suggestion}")
+    
+    # === LEGACY SUPPORT ===
+    # Handle old format results for backward compatibility
+    if not result.get('detailed_analysis') and result.get('bias_indicators'):
+        st.markdown("### 🔍 Basic Bias Indicators")
+        for indicator in result['bias_indicators']:
+            st.markdown(f"• {indicator}")
+    
+    if not result.get('reader_guidance') and result.get('recommendations'):
+        st.markdown("### 💡 Interpretation Guide")
+        st.info(result['recommendations'])
+
+
 def highlight_biased_text(original_text: str, biased_phrases: list, max_length: int = 2000) -> str:
     """Create HTML highlighted version of text showing biased phrases"""
     
@@ -1256,6 +1627,97 @@ def display_highlighted_text(original_text: str, result: dict):
     with col3:
         st.markdown("💡 *Darker colors = Higher intensity*")
         st.markdown("🎯 *Hover over highlights for details*")
+
+
+def display_comparison_results(result):
+    """Display article comparison results."""
+    if not result or result.get('error'):
+        st.error(f"Comparison failed: {result.get('error', 'Unknown error')}")
+        return
+    
+    st.markdown('<div class="section-header">🔄 Article Comparison</div>', unsafe_allow_html=True)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**📋 Similarities**")
+        similarities = result.get('similarities', [])
+        for sim in similarities:
+            st.markdown(f"✅ {sim}")
+        
+        st.markdown("**🤝 Factual Agreements**")
+        agreements = result.get('factual_agreements', [])
+        for agree in agreements:
+            st.markdown(f"✅ {agree}")
+    
+    with col2:
+        st.markdown("**⚡ Key Differences**")
+        differences = result.get('differences', [])
+        for diff in differences:
+            st.markdown(f"❌ {diff}")
+        
+        st.markdown("**⚠️ Factual Disagreements**")
+        disagreements = result.get('factual_disagreements', [])
+        for disagree in disagreements:
+            st.markdown(f"❌ {disagree}")
+    
+    # Main topic and bias comparison
+    st.markdown('<div class="comparison-box">', unsafe_allow_html=True)
+    st.markdown(f"**🎯 Main Topic:** {result.get('main_topic', 'Not identified')}")
+    st.markdown(f"**⚖️ Bias Analysis:** {result.get('bias_comparison', 'Not available')}")
+    st.markdown(f"**📝 Recommendation:** {result.get('recommendation', 'No guidance available')}")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+def display_synthesis_results(result):
+    """Display neutral synthesis results."""
+    if not result or result.get('error'):
+        st.error(f"Synthesis failed: {result.get('error', 'Unknown error')}")
+        return
+    
+    st.markdown('<div class="section-header">🔗 Neutral Synthesis</div>', unsafe_allow_html=True)
+    
+    # Title and summary
+    title = result.get('title', 'Synthesis Report')
+    st.markdown(f"### {title}")
+    
+    summary = result.get('neutral_summary', 'No summary available')
+    st.markdown('<div class="synthesis-box">', unsafe_allow_html=True)
+    st.markdown(summary)
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**📊 Key Facts (Verified)**")
+        facts = result.get('key_facts', [])
+        for fact in facts:
+            st.markdown(f"• {fact}")
+        
+        st.markdown("**🤝 Areas of Consensus**")
+        consensus = result.get('areas_of_consensus', [])
+        for item in consensus:
+            st.markdown(f"✅ {item}")
+    
+    with col2:
+        st.markdown("**👥 Different Perspectives**")
+        perspectives = result.get('different_perspectives', [])
+        for perspective in perspectives:
+            st.markdown(f"• {perspective}")
+        
+        st.markdown("**⚠️ Areas of Disagreement**")
+        disagreements = result.get('areas_of_disagreement', [])
+        for item in disagreements:
+            st.markdown(f"❌ {item}")
+    
+    # Confidence and limitations
+    st.markdown("**📈 Quality Assessment**")
+    confidence = result.get('confidence_assessment', 'Not assessed')
+    limitations = result.get('limitations', 'None specified')
+    
+    st.info(f"**Confidence:** {confidence}")
+    if limitations != 'None specified':
+        st.warning(f"**Limitations:** {limitations}")
 
 
 def manage_articles():
@@ -1375,7 +1837,7 @@ def main():
     analysis_mode = settings['analysis_mode']
     
     # Create tabs for different interfaces
-    if analysis_mode in ["Single Summary", "Bias Analysis"]:
+    if analysis_mode in ["Single Summary", "Bias Analysis", "Full Report"]:
         tab1, tab2 = st.tabs(["📄 Single Article Analysis", "📊 Results"])
         
         with tab1:
@@ -1463,7 +1925,7 @@ def main():
                     text_content = ""
             
             # Additional metadata for enhanced bias analysis
-            if analysis_mode in ["Bias Analysis"]:
+            if analysis_mode in ["Bias Analysis", "Full Report"]:
                 st.markdown("### 📋 Article Metadata (Optional - Enhances Bias Analysis)")
                 col1, col2 = st.columns(2)
                 
@@ -1487,7 +1949,8 @@ def main():
             # Analysis button
             analysis_label = {
                 "Single Summary": "📝 Generate Summary",
-                "Bias Analysis": "🎯 Analyze Bias"
+                "Bias Analysis": "🎯 Analyze Bias", 
+                "Full Report": "📊 Generate Full Report"
             }
             
             if st.button(analysis_label[analysis_mode], type="primary", use_container_width=True):
@@ -1510,6 +1973,8 @@ def main():
                                 result = engine.analyze_single_article(text_content, mode='summary', source_url=source_url, article_title=article_title)
                             elif analysis_mode == "Bias Analysis":
                                 result = engine.analyze_single_article(text_content, mode='bias', source_url=source_url, article_title=article_title)
+                            elif analysis_mode == "Full Report":
+                                result = engine.analyze_single_article(text_content, mode='full', source_url=source_url, article_title=article_title)
                             
                             # Store results
                             st.session_state.last_results = {
@@ -1544,6 +2009,14 @@ def main():
                     # Add highlighted text visualization for bias analysis
                     if st.session_state.last_results.get('original_text'):
                         display_highlighted_text(st.session_state.last_results['original_text'], result_data)
+                elif result_type == "Full Report":
+                    if result_data.get('summary'):
+                        format_summary_display(result_data['summary'])
+                    if result_data.get('bias_analysis'):
+                        display_bias_analysis(result_data['bias_analysis'])
+                        # Add highlighted text visualization for full report bias analysis
+                        if st.session_state.last_results.get('original_text'):
+                            display_highlighted_text(st.session_state.last_results['original_text'], result_data['bias_analysis'])
                 
                 # Export options
                 st.markdown("---")
@@ -1577,8 +2050,12 @@ def main():
             else:
                 st.info("No analysis results yet. Use the 'Single Article Analysis' tab to get started.")
     
-    else:  # Source Convergence Analysis
-        if analysis_mode == "Source Convergence Analysis":
+    else:  # Multi-article modes including Source Convergence Analysis and Cross-Source BABE Comparison
+        if analysis_mode == "Cross-Source BABE Comparison":
+            # Dedicated interface for BABE cross-source comparison
+            add_cross_source_comparison_interface()
+            
+        elif analysis_mode == "Source Convergence Analysis":
             tab1, tab2 = st.tabs(["🔍 Topic Search", "📊 Convergence Results"])
             
             with tab1:
@@ -2081,7 +2558,101 @@ CONVERGENCE POINTS (Likely True):
                             st.rerun()
                 else:
                     st.info("No convergence analysis results yet. Use the 'Topic Search' tab to analyze multiple sources on a topic.")
-
+        
+        else:  # Original multi-article modes
+            tab1, tab2 = st.tabs(["📚 Multi-Article Input", "📊 Analysis Results"])
+            
+            with tab1:
+                has_articles = manage_articles()
+            
+            if has_articles and len(st.session_state.articles) >= 2:
+                # Multi-article analysis button
+                analysis_label = {
+                    "Multi-Article Comparison": "🔄 Compare Articles",
+                    "Neutral Synthesis": "🔗 Generate Synthesis"
+                }
+                
+                if st.button(analysis_label[analysis_mode], type="primary", use_container_width=True):
+                    with st.spinner(f"Performing {analysis_mode.lower()}..."):
+                        try:
+                            # Create configuration and analysis engine
+                            config = create_temp_config(settings)
+                            if not config:
+                                return
+                            
+                            engine = AnalysisEngine(
+                                model_type=settings['model'], 
+                                config=config, 
+                                verbose=settings['verbose_mode']
+                            )
+                            
+                            # Perform multi-article analysis
+                            if analysis_mode == "Multi-Article Comparison":
+                                result = engine.analyze_multiple_articles(st.session_state.articles, mode='compare')
+                            elif analysis_mode == "Neutral Synthesis":
+                                result = engine.analyze_multiple_articles(st.session_state.articles, mode='synthesis')
+                            
+                            # Store results
+                            st.session_state.last_results = {
+                                'type': analysis_mode,
+                                'data': result
+                            }
+                            
+                            st.success(f"{analysis_mode} completed successfully!")
+                            
+                        except Exception as e:
+                            st.error(f"Error during analysis: {str(e)}")
+                            if settings['verbose_mode']:
+                                st.code(traceback.format_exc())
+            
+            elif has_articles:
+                st.warning(f"You have {len(st.session_state.articles)} article(s). Need at least 2 articles for comparison/synthesis.")
+            else:
+                st.info("Add at least 2 articles to perform multi-article analysis.")
+            
+            with tab2:
+                # Display multi-article results
+                if st.session_state.last_results:
+                    result_type = st.session_state.last_results['type']
+                    result_data = st.session_state.last_results['data']
+                    
+                    if result_type == "Multi-Article Comparison":
+                        display_comparison_results(result_data)
+                    elif result_type == "Neutral Synthesis":
+                        display_synthesis_results(result_data)
+                    
+                    # Export options
+                    st.markdown("---")
+                    st.markdown("## 📥 Export")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        download_content = create_download_content(result_data)
+                        st.download_button(
+                            label="📄 Download as Text",
+                            data=download_content,
+                            file_name=f"{result_type.lower().replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                            mime="text/plain"
+                        )
+                    
+                    with col2:
+                        if isinstance(result_data, dict):
+                            json_content = json.dumps(result_data, indent=2, ensure_ascii=False)
+                            st.download_button(
+                                label="📋 Download as JSON",
+                                data=json_content,
+                                file_name=f"{result_type.lower().replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                                mime="application/json"
+                            )
+                    
+                    with col3:
+                        if st.button("🗑️ Clear Results", key="clear_results_3"):
+                            st.session_state.last_results = None
+                            st.rerun()
+                else:
+                    st.info("No analysis results yet. Use the 'Multi-Article Input' tab to get started.")
+    
     # Sidebar help
     with st.sidebar:
         st.markdown("---")
@@ -2090,7 +2661,10 @@ CONVERGENCE POINTS (Likely True):
         mode_help = {
             "Single Summary": "Generate concise summaries with key points and action items.",
             "Bias Analysis": "Detect political/ideological bias and emotional language.",
-            "Source Convergence Analysis": "Find related articles from diverse sources and identify consensus points vs disputed claims."
+            "Multi-Article Comparison": "Compare articles side-by-side to find similarities and differences.",
+            "Neutral Synthesis": "Create balanced synthesis from multiple sources.",
+            "Source Convergence Analysis": "Find related articles from diverse sources and identify consensus points vs disputed claims.",
+            "Full Report": "Complete analysis combining summary and bias detection."
         }
         
         st.info(mode_help.get(analysis_mode, "Select an analysis mode to see help."))
