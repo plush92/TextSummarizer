@@ -1891,3 +1891,55 @@ class AnalysisEngine:
             }
         else:
             raise ValueError(f"Unknown multi-article mode: {mode}")
+    
+    def generate_response(self, prompt: str, content: str = "") -> Dict[str, Any]:
+        """Generate a response for custom prompts using the configured AI model"""
+        try:
+            # Combine prompt and content for analysis
+            full_text = f"{prompt}\n\n{content}" if content else prompt
+            
+            # Use the base summarizer to generate a response
+            # This leverages the existing AI models (OpenAI/Anthropic/Local)
+            if hasattr(self.base_summarizer, 'client'):
+                # For OpenAI/Anthropic models
+                if hasattr(self.base_summarizer.client, 'chat'):
+                    # OpenAI model
+                    response = self.base_summarizer.client.chat.completions.create(
+                        model=getattr(self.base_summarizer, 'model', 'gpt-3.5-turbo'),
+                        messages=[{"role": "user", "content": full_text}],
+                        max_tokens=1000,
+                        temperature=0.7
+                    )
+                    return {
+                        'success': True,
+                        'response': response.choices[0].message.content,
+                        'model': 'openai'
+                    }
+                elif hasattr(self.base_summarizer.client, 'messages'):
+                    # Anthropic model
+                    response = self.base_summarizer.client.messages.create(
+                        model=getattr(self.base_summarizer, 'model', 'claude-3-sonnet-20240229'),
+                        max_tokens=1000,
+                        messages=[{"role": "user", "content": full_text}]
+                    )
+                    return {
+                        'success': True,
+                        'response': response.content[0].text,
+                        'model': 'anthropic'
+                    }
+            else:
+                # Local model fallback
+                return {
+                    'success': False,
+                    'response': f"Local model analysis: {content[:200]}...",
+                    'model': 'local',
+                    'error': 'Local model has limited response generation capabilities'
+                }
+        
+        except Exception as e:
+            return {
+                'success': False,
+                'response': '',
+                'error': str(e),
+                'model': getattr(self, 'model_type', 'unknown')
+            }

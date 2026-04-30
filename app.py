@@ -323,14 +323,131 @@ def validate_and_clean_url(url):
         return None, "Invalid URL format"
 
 
+def extract_topics_local_mode(content, title):
+    """
+    Local topic extraction without AI - uses text analysis and keyword extraction.
+    Provides better results than just using the title.
+    """
+    import re
+    from collections import Counter
+    
+    try:
+        # Combine title and content for analysis
+        full_text = f"{title} {content[:1500]}"  # Use first 1500 chars
+        
+        # Basic text processing
+        # Remove URLs, emails, and special characters
+        clean_text = re.sub(r'http[s]?://\S+', '', full_text)
+        clean_text = re.sub(r'\S+@\S+', '', clean_text)
+        clean_text = re.sub(r'[^\w\s]', ' ', clean_text)
+        
+        # Extract potential keywords (2-3 word phrases and important single words)
+        words = clean_text.lower().split()
+        
+        # Common stop words to filter out
+        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her', 'us', 'them', 'my', 'your', 'his', 'its', 'our', 'their', 'said', 'says', 'also', 'than', 'more', 'very', 'so', 'just', 'now', 'then', 'here', 'there', 'when', 'where', 'why', 'how', 'all', 'any', 'both', 'each', 'few', 'many', 'most', 'other', 'some', 'such', 'only', 'own', 'same', 'so', 'than', 'too', 'very'}
+        
+        # Filter meaningful words (length > 2, not stop words)
+        meaningful_words = [w for w in words if len(w) > 2 and w not in stop_words]
+        
+        # Count word frequency
+        word_counts = Counter(meaningful_words)
+        top_words = [word for word, count in word_counts.most_common(10)]
+        
+        # Extract 2-word phrases
+        phrases = []
+        for i in range(len(meaningful_words) - 1):
+            phrase = f"{meaningful_words[i]} {meaningful_words[i+1]}"
+            if len(phrase) > 6:  # Skip very short phrases
+                phrases.append(phrase)
+        
+        phrase_counts = Counter(phrases)
+        top_phrases = [phrase for phrase, count in phrase_counts.most_common(5)]
+        
+        # Create enhanced search terms by combining title keywords with content keywords
+        title_words = [w for w in title.lower().split() if len(w) > 2 and w not in stop_words]
+        
+        # Prioritize title words + top content words + top phrases
+        search_components = []
+        if title_words:
+            search_components.extend(title_words[:3])  # Top 3 title words
+        if top_words:
+            search_components.extend([w for w in top_words[:3] if w not in search_components])
+        
+        # Create search term
+        if search_components:
+            search_terms = ' '.join(search_components[:4])  # Max 4 components
+        else:
+            search_terms = title
+            
+        # Create themes from top phrases and words
+        themes = []
+        if top_phrases:
+            themes.extend(top_phrases[:2])
+        themes.extend([w.capitalize() for w in top_words[:3] if w not in ' '.join(themes).lower()])
+        
+        if not themes:
+            themes = [title]
+        
+        return {
+            'success': True,
+            'summary': f"Local analysis of article: {title[:100]}{'...' if len(title) > 100 else ''}",
+            'themes': themes[:5],  # Limit to 5 themes
+            'search_terms': search_terms,
+            'extraction_method': 'local'
+        }
+        
+    except Exception as e:
+        # Final fallback
+        return {
+            'success': False,
+            'error': f'Local extraction error: {str(e)}',
+            'fallback_reason': 'local_error',
+            'summary': f"Title-based extraction: {title}",
+            'themes': [title],
+            'search_terms': title
+        }
+
+
 def extract_topics_from_article(content, title, settings):
     """
     Enhanced topic extraction using AI summarization.
     Analyzes the full article content to extract key themes and search terms.
     """
     try:
+        # Check if we're using local model - provide basic but improved topic extraction
+        if settings['model'] == 'local':
+            return extract_topics_local_mode(content, title)
+        
+        # Check if we have the necessary API keys for AI models
+        missing_keys = []
+        if settings['model'] == 'openai' and not settings.get('openai_key'):
+            missing_keys.append('OpenAI API Key')
+        elif settings['model'] == 'anthropic' and not settings.get('anthropic_key'):
+            missing_keys.append('Anthropic API Key')
+        
+        if missing_keys:
+            return {
+                'success': False,
+                'error': f'Missing required API key: {missing_keys[0]}',
+                'fallback_reason': 'no_api_key',
+                'summary': f"Extracted from title: {title}",
+                'themes': [title],
+                'search_terms': title
+            }
+        
         # Create a temporary config and analysis engine
         config = create_temp_config(settings)
+        if not config:
+            return {
+                'success': False,
+                'error': 'Configuration setup failed',
+                'fallback_reason': 'config_error',
+                'summary': f"Extracted from title: {title}",
+                'themes': [title],
+                'search_terms': title
+            }
+            
         engine = AnalysisEngine(
             model_type=settings['model'], 
             config=config, 
@@ -643,44 +760,437 @@ def analyze_source_diversity(articles):
         return [], 0, 0
 
 
-def find_convergence_points(article_summaries):
+def extract_atomic_claims(text, source_info):
     """
-    Find convergence points across multiple article analyses.
-    This is a simplified version - could be enhanced with NLP.
+    Layer 1: Extract atomic claims from article text.
+    Returns factual statements that can be verified/compared.
+    """
+    import re
+    from datetime import datetime
+    
+    claims = []
+    sentences = re.split(r'[.!?]+', text)
+    
+    # Patterns for different types of claims
+    patterns = {
+        'event': r'(.*?)\s+(happened|occurred|took place|began|started|ended)\s+(.*)',
+        'causation': r'(.*?)\s+(caused|led to|resulted in|triggered)\s+(.*)',
+        'attribution': r'(.*?)\s+(said|stated|claimed|announced|reported)\s+(.*)',
+        'quantity': r'(.*?)\s+(\d+(?:,\d+)*(?:\.\d+)?)\s+(.*)',
+        'temporal': r'(.*?)\s+(yesterday|today|Monday|Tuesday|January|February|on \w+|in \d+)\s+(.*)',
+        'location': r'(.*?)\s+(in|at|near|from)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(.*)'
+    }
+    
+    for i, sentence in enumerate(sentences[:20]):  # Limit for performance
+        sentence = sentence.strip()
+        if len(sentence) < 20:  # Skip very short sentences
+            continue
+            
+        # Extract different types of claims
+        for claim_type, pattern in patterns.items():
+            matches = re.finditer(pattern, sentence, re.IGNORECASE)
+            for match in matches:
+                claim = {
+                    'id': f"{source_info['source']}_{i}_{claim_type}",
+                    'text': sentence,
+                    'type': claim_type,
+                    'source': source_info['source'],
+                    'source_url': source_info['url'],
+                    'source_title': source_info['title'],
+                    'confidence': 0.7,  # Base confidence
+                    'extracted_components': match.groups() if match.groups() else []
+                }
+                claims.append(claim)
+    
+    return claims
+
+def cluster_similar_claims(all_claims):
+    """
+    Layer 2: Group semantically similar claims across articles.
+    Uses text similarity to identify the same claim expressed differently.
+    """
+    import difflib
+    from collections import defaultdict
+    
+    clusters = []
+    used_claim_ids = set()
+    
+    for i, claim in enumerate(all_claims):
+        if claim['id'] in used_claim_ids:
+            continue
+            
+        # Start new cluster
+        cluster = {
+            'cluster_id': f"cluster_{len(clusters)}",
+            'representative_claim': claim['text'],
+            'claims': [claim],
+            'sources': {claim['source']},
+            'types': {claim['type']},
+            'similarity_threshold': 0.6
+        }
+        
+        used_claim_ids.add(claim['id'])
+        
+        # Find similar claims
+        for j, other_claim in enumerate(all_claims[i+1:], i+1):
+            if other_claim['id'] in used_claim_ids:
+                continue
+                
+            # Calculate similarity
+            similarity = difflib.SequenceMatcher(
+                None, 
+                claim['text'].lower(), 
+                other_claim['text'].lower()
+            ).ratio()
+            
+            # Also check if they're the same type and have overlapping components
+            type_match = claim['type'] == other_claim['type']
+            component_overlap = False
+            
+            if claim.get('extracted_components') and other_claim.get('extracted_components'):
+                comp1 = set(' '.join(claim['extracted_components']).lower().split())
+                comp2 = set(' '.join(other_claim['extracted_components']).lower().split())
+                component_overlap = len(comp1.intersection(comp2)) > 0
+            
+            # Cluster if similar enough
+            if similarity > cluster['similarity_threshold'] or (type_match and component_overlap and similarity > 0.4):
+                cluster['claims'].append(other_claim)
+                cluster['sources'].add(other_claim['source'])
+                cluster['types'].add(other_claim['type'])
+                used_claim_ids.add(other_claim['id'])
+        
+        clusters.append(cluster)
+    
+    return clusters
+
+def score_cluster_agreement(cluster, total_sources):
+    """
+    Layer 3: Calculate agreement scoring for each claim cluster.
+    """
+    num_sources_reporting = len(cluster['sources'])
+    source_coverage = num_sources_reporting / total_sources
+    
+    # Source diversity bonus (reporting from different perspectives is valuable)
+    source_list = list(cluster['sources'])
+    diversity_bonus = min(len(set(source_list)), 3) / 3  # Cap at 3 different sources
+    
+    # Confidence based on consistency of reporting
+    claim_texts = [claim['text'] for claim in cluster['claims']]
+    avg_similarity = 0
+    if len(claim_texts) > 1:
+        similarities = []
+        for i in range(len(claim_texts)):
+            for j in range(i+1, len(claim_texts)):
+                sim = difflib.SequenceMatcher(None, claim_texts[i].lower(), claim_texts[j].lower()).ratio()
+                similarities.append(sim)
+        avg_similarity = sum(similarities) / len(similarities) if similarities else 0
+    
+    agreement_score = {
+        'source_coverage': source_coverage,
+        'sources_reporting': num_sources_reporting,
+        'total_sources': total_sources,
+        'diversity_score': diversity_bonus,
+        'consistency_score': avg_similarity,
+        'overall_confidence': (source_coverage * 0.4 + diversity_bonus * 0.3 + avg_similarity * 0.3),
+        'agreement_level': 'high' if source_coverage > 0.7 else 'medium' if source_coverage > 0.4 else 'low'
+    }
+    
+    return agreement_score
+
+def analyze_claim_framing(cluster):
+    """
+    Layer 4: Analyze how the same claim is framed differently across sources.
+    """
+    framing_analysis = {
+        'sentiment_variations': [],
+        'emphasis_differences': [],
+        'loaded_language': [],
+        'perspective_differences': []
+    }
+    
+    # Simple sentiment analysis (could be enhanced with ML models)
+    positive_words = {'success', 'achievement', 'victory', 'progress', 'improvement', 'breakthrough', 'positive'}
+    negative_words = {'failure', 'defeat', 'setback', 'decline', 'crisis', 'disaster', 'negative', 'concerning'}
+    
+    for claim in cluster['claims']:
+        text_lower = claim['text'].lower()
+        
+        # Sentiment analysis
+        pos_count = sum(1 for word in positive_words if word in text_lower)
+        neg_count = sum(1 for word in negative_words if word in text_lower)
+        
+        sentiment = 'positive' if pos_count > neg_count else 'negative' if neg_count > pos_count else 'neutral'
+        
+        # Check for loaded language patterns
+        loaded_phrases = []
+        if any(word in text_lower for word in ['alleged', 'claimed', 'supposedly', 'reportedly']):
+            loaded_phrases.append('uncertainty_markers')
+        if any(word in text_lower for word in ['crisis', 'disaster', 'catastrophe', 'emergency']):
+            loaded_phrases.append('crisis_language')
+        if any(word in text_lower for word in ['expert', 'official', 'authority', 'confirmed']):
+            loaded_phrases.append('authority_appeals')
+        
+        framing_analysis['sentiment_variations'].append({
+            'source': claim['source'],
+            'sentiment': sentiment,
+            'pos_indicators': pos_count,
+            'neg_indicators': neg_count
+        })
+        
+        if loaded_phrases:
+            framing_analysis['loaded_language'].append({
+                'source': claim['source'],
+                'techniques': loaded_phrases
+            })
+    
+    # Identify emphasis differences
+    claim_lengths = [len(claim['text']) for claim in cluster['claims']]
+    if claim_lengths:
+        avg_length = sum(claim_lengths) / len(claim_lengths)
+        for claim in cluster['claims']:
+            if len(claim['text']) > avg_length * 1.5:
+                framing_analysis['emphasis_differences'].append({
+                    'source': claim['source'],
+                    'emphasis': 'detailed_coverage',
+                    'length_ratio': len(claim['text']) / avg_length
+                })
+            elif len(claim['text']) < avg_length * 0.5:
+                framing_analysis['emphasis_differences'].append({
+                    'source': claim['source'],
+                    'emphasis': 'brief_mention',
+                    'length_ratio': len(claim['text']) / avg_length
+                })
+    
+    return framing_analysis
+
+def detect_omissions(clusters, source_list):
+    """
+    Layer 5: Detect what claims are present in some sources but missing from others.
+    """
+    omissions = []
+    
+    for cluster in clusters:
+        missing_sources = set(source_list) - cluster['sources']
+        
+        if missing_sources:
+            # Assess importance of the omitted claim
+            importance_score = cluster.get('agreement_score', {}).get('overall_confidence', 0)
+            
+            # Higher importance if it's a high-agreement claim that some sources omit
+            if importance_score > 0.6 and len(missing_sources) > 0:
+                omission = {
+                    'claim': cluster['representative_claim'],
+                    'reporting_sources': list(cluster['sources']),
+                    'omitting_sources': list(missing_sources),
+                    'importance_score': importance_score,
+                    'omission_type': 'significant' if importance_score > 0.8 else 'notable',
+                    'potential_reasons': []
+                }
+                
+                # Infer potential reasons for omission
+                if cluster.get('framing_analysis', {}).get('loaded_language'):
+                    omission['potential_reasons'].append('controversial_framing')
+                if any('crisis' in claim['text'].lower() for claim in cluster['claims']):
+                    omission['potential_reasons'].append('crisis_narrative')
+                if any(word in cluster['representative_claim'].lower() for word in ['government', 'political', 'policy']):
+                    omission['potential_reasons'].append('political_sensitivity')
+                
+                omissions.append(omission)
+    
+    return omissions
+
+def create_truth_map(clusters, omissions, source_analysis):
+    """
+    Layer 6: Create the final "Truth Map" output instead of a single summary.
+    """
+    truth_map = {
+        'timestamp': datetime.now().isoformat(),
+        'sources_analyzed': len(source_analysis),
+        'claims_extracted': sum(len(cluster['claims']) for cluster in clusters),
+        'widely_reported': [],
+        'disputed_framed_differently': [],
+        'missing_from_some_coverage': [],
+        'source_perspective_distances': [],
+        'methodological_notes': []
+    }
+    
+    # Categorize claims by agreement level
+    for cluster in clusters:
+        agreement = cluster.get('agreement_score', {})
+        framing = cluster.get('framing_analysis', {})
+        
+        claim_summary = {
+            'claim': cluster['representative_claim'],
+            'sources_reporting': list(cluster['sources']),
+            'confidence': agreement.get('overall_confidence', 0),
+            'source_count': len(cluster['sources'])
+        }
+        
+        # Widely reported (high agreement)
+        if agreement.get('agreement_level') == 'high':
+            truth_map['widely_reported'].append(claim_summary)
+        
+        # Disputed/Framed Differently (medium agreement or framing differences)
+        elif (agreement.get('agreement_level') in ['medium', 'low'] or 
+              len(framing.get('sentiment_variations', [])) > 1):
+            
+            dispute_info = claim_summary.copy()
+            dispute_info['framing_differences'] = {
+                'sentiment_range': list(set(sv['sentiment'] for sv in framing.get('sentiment_variations', []))),
+                'loaded_language_detected': len(framing.get('loaded_language', [])) > 0,
+                'emphasis_variations': len(framing.get('emphasis_differences', [])) > 0
+            }
+            truth_map['disputed_framed_differently'].append(dispute_info)
+    
+    # Missing from some coverage
+    for omission in omissions:
+        truth_map['missing_from_some_coverage'].append({
+            'claim': omission['claim'],
+            'reported_by': omission['reporting_sources'],
+            'omitted_by': omission['omitting_sources'],
+            'importance': omission['omission_type'],
+            'potential_reasons': omission['potential_reasons']
+        })
+    
+    # Calculate perspective distances between sources
+    if len(source_analysis) > 1:
+        for i in range(len(source_analysis)):
+            for j in range(i+1, len(source_analysis)):
+                source1, source2 = source_analysis[i], source_analysis[j]
+                
+                # Calculate difference in claim selection and framing
+                s1_claims = set()
+                s2_claims = set()
+                
+                for cluster in clusters:
+                    if source1['source'] in cluster['sources']:
+                        s1_claims.add(cluster['cluster_id'])
+                    if source2['source'] in cluster['sources']:
+                        s2_claims.add(cluster['cluster_id'])
+                
+                overlap = len(s1_claims.intersection(s2_claims))
+                total = len(s1_claims.union(s2_claims))
+                story_similarity = overlap / total if total > 0 else 0
+                
+                bias_distance = abs(source1.get('bias_score', 0) - source2.get('bias_score', 0))
+                
+                perspective_distance = {
+                    'source_pair': f"{source1['source']} ↔ {source2['source']}",
+                    'story_overlap': story_similarity,
+                    'bias_difference': bias_distance,
+                    'perspective_distance': 1 - story_similarity + (bias_distance / 10),
+                    'interpretation': 'similar_stories' if story_similarity > 0.7 else 
+                                   'different_emphasis' if story_similarity > 0.4 else 
+                                   'different_stories'
+                }
+                
+                truth_map['source_perspective_distances'].append(perspective_distance)
+    
+    # Add methodological notes
+    truth_map['methodological_notes'] = [
+        f"Analysis based on {len(clusters)} claim clusters extracted from {len(source_analysis)} sources",
+        "Claims grouped using text similarity and semantic clustering",
+        "Agreement scored by source coverage and consistency",
+        "Framing analysis includes sentiment and loaded language detection",
+        "Omission detection weighted by claim importance and source diversity",
+        "This system shows what's agreed on, contested, and missing—not 'the truth'"
+    ]
+    
+    return truth_map
+
+def find_convergence_points(article_summaries, articles_metadata=None):
+    """
+    Enhanced convergence analysis using layered claim extraction and truth mapping.
+    Returns a comprehensive "Truth Map" instead of simple convergence points.
     """
     try:
         if not article_summaries or len(article_summaries) < 2:
-            return {"convergence_points": [], "disputed_claims": [], "consensus_level": 0}
+            return {
+                "convergence_points": [], 
+                "disputed_claims": [], 
+                "consensus_level": 0,
+                "truth_map": None,
+                "error": "Insufficient articles for convergence analysis"
+            }
         
-        # Extract key points from each summary
-        all_points = []
-        for summary in article_summaries:
-            if isinstance(summary, dict):
-                # Extract from structured summary
-                points = summary.get('key_points', []) + summary.get('main_claims', [])
-            else:
-                # Extract from text summary (basic approach)
-                points = [line.strip() for line in str(summary).split('\n') if line.strip() and not line.startswith('#')]
-            
-            all_points.append(points)
+        # Prepare source information
+        sources_info = []
+        if articles_metadata:
+            sources_info = articles_metadata
+        else:
+            # Create basic source info if not provided
+            for i, summary in enumerate(article_summaries):
+                sources_info.append({
+                    'source': f'Source_{i+1}',
+                    'url': f'unknown_url_{i}',
+                    'title': f'Article {i+1}',
+                    'bias_score': 0
+                })
         
-        # Find similar points across sources (simplified approach)
-        convergence_points = []
-        disputed_claims = []
+        # Layer 1: Extract atomic claims from each article
+        all_claims = []
+        for i, summary in enumerate(article_summaries):
+            if i < len(sources_info):
+                source_info = sources_info[i]
+                summary_text = summary if isinstance(summary, str) else str(summary)
+                claims = extract_atomic_claims(summary_text, source_info)
+                all_claims.extend(claims)
         
-        # This is a basic implementation - could be enhanced with semantic similarity
-        common_keywords = {}
+        if not all_claims:
+            return {
+                "convergence_points": [],
+                "disputed_claims": [],
+                "consensus_level": 0,
+                "truth_map": None,
+                "error": "No claims could be extracted from articles"
+            }
         
-        for article_points in all_points:
-            for point in article_points:
-                words = set(point.lower().split())
-                for word in words:
-                    if len(word) > 4:  # Only consider meaningful words
-                        common_keywords[word] = common_keywords.get(word, 0) + 1
+        # Layer 2: Cluster similar claims
+        clusters = cluster_similar_claims(all_claims)
         
-        # Find words mentioned by multiple sources
-        total_sources = len(all_points)
-        consensus_threshold = max(2, total_sources // 2)  # At least half of sources
+        # Layer 3: Score agreement for each cluster
+        total_sources = len(sources_info)
+        for cluster in clusters:
+            cluster['agreement_score'] = score_cluster_agreement(cluster, total_sources)
+        
+        # Layer 4: Analyze framing within clusters
+        for cluster in clusters:
+            cluster['framing_analysis'] = analyze_claim_framing(cluster)
+        
+        # Layer 5: Detect omissions
+        source_names = [source['source'] for source in sources_info]
+        omissions = detect_omissions(clusters, source_names)
+        
+        # Layer 6: Create Truth Map
+        truth_map = create_truth_map(clusters, omissions, sources_info)
+        
+        # Legacy format for backwards compatibility
+        convergence_points = [claim['claim'] for claim in truth_map['widely_reported']]
+        disputed_claims = [claim['claim'] for claim in truth_map['disputed_framed_differently']]
+        consensus_level = len(truth_map['widely_reported']) / len(clusters) if clusters else 0
+        
+        return {
+            "convergence_points": convergence_points,
+            "disputed_claims": disputed_claims,
+            "consensus_level": consensus_level,
+            "truth_map": truth_map,
+            "analysis_summary": {
+                "total_claims": len(all_claims),
+                "claim_clusters": len(clusters),
+                "widely_agreed": len(truth_map['widely_reported']),
+                "disputed_or_framed": len(truth_map['disputed_framed_differently']),
+                "omissions_detected": len(truth_map['missing_from_some_coverage'])
+            }
+        }
+        
+    except Exception as e:
+        return {
+            "convergence_points": [],
+            "disputed_claims": [],
+            "consensus_level": 0,
+            "truth_map": None,
+            "error": f"Analysis failed: {str(e)}"
+        }
         
         consensus_words = {word: count for word, count in common_keywords.items() 
                           if count >= consensus_threshold}
@@ -738,7 +1248,7 @@ def setup_sidebar():
         "Select AI Model",
         options=model_options,
         index=0,
-        help="Choose the AI model for analysis"
+        help="OpenAI/Anthropic: Advanced analysis + smart topic extraction. Local: Basic analysis, title-only topic extraction."
     )
     
     # API Key configuration
@@ -887,6 +1397,355 @@ def format_summary_display(result):
         st.text(str(result))
 
 
+# =============================================================================
+# ENHANCED BIAS ANALYSIS HELPER FUNCTIONS
+# =============================================================================
+
+def get_bias_rule_explanation(text: str, category: str) -> str:
+    """Generate explanation for why text is biased based on category"""
+    rules = {
+        'lexical_bias': [
+            ('emotionally charged adjectives', ['devastating', 'shocking', 'outrageous', 'brilliant']),
+            ('value-laden language', ['hero', 'villain', 'savior', 'enemy']),
+            ('loaded terminology', ['regime', 'thugs', 'freedom fighters']),
+            ('inflammatory descriptors', ['slammed', 'destroyed', 'crushed'])
+        ],
+        'informational_bias': [
+            ('selective statistics', ['only positive data', 'cherry-picked numbers']),
+            ('omitted context', ['missing background', 'no counterarguments']),
+            ('emphasis imbalance', ['disproportionate focus', 'buried key facts'])
+        ],
+        'demographic_bias': [
+            ('group generalizations', ['all', 'every', 'these people']),
+            ('stereotyping language', ['typical', 'as expected', 'unsurprisingly']),
+            ('tokenism patterns', ['single representative', 'exceptional case'])
+        ],
+        'epistemological_bias': [
+            ('opinion as fact', ['obviously', 'clearly', 'undoubtedly']),
+            ('unattributed claims', ['sources say', 'it is believed']),
+            ('false certainty', ['will happen', 'proves that', 'shows'])
+        ]
+    }
+    
+    text_lower = text.lower()
+    for rule_name, indicators in rules.get(category, []):
+        for indicator in indicators:
+            if isinstance(indicator, str) and indicator in text_lower:
+                return rule_name
+            elif isinstance(indicator, list):
+                for word in indicator:
+                    if word in text_lower:
+                        return rule_name
+    
+    return f"Detected {category.replace('_', ' ')} pattern"
+
+def generate_neutral_alternatives(biased_text: str, category: str) -> list:
+    """Generate 2-3 neutral alternatives for biased text"""
+    alternatives = []
+    
+    # Simple pattern-based alternatives (in real implementation, this would be AI-generated)
+    if 'slammed' in biased_text.lower():
+        alternatives = [
+            biased_text.replace('slammed', 'criticized'),
+            biased_text.replace('slammed', 'responded to'),
+            biased_text.replace('slammed', 'disagreed with')
+        ]
+    elif 'devastating' in biased_text.lower():
+        alternatives = [
+            biased_text.replace('devastating', 'significant'),
+            biased_text.replace('devastating', 'substantial'),
+            biased_text.replace('devastating', 'considerable')
+        ]
+    elif 'hero' in biased_text.lower() or 'villain' in biased_text.lower():
+        alternatives = [
+            "Use specific role/title instead of value-laden labels",
+            "Describe actions without character judgment",
+            "Let readers form their own opinions about the person"
+        ]
+    else:
+        # Generic alternatives based on category
+        if category == 'lexical_bias':
+            alternatives = [
+                "Use more neutral, descriptive language",
+                "Replace emotional words with factual terms", 
+                "Choose terminology that doesn't imply judgment"
+            ]
+        elif category == 'informational_bias':
+            alternatives = [
+                "Include perspectives from multiple stakeholders",
+                "Provide relevant context and background",
+                "Present counterarguments or alternative views"
+            ]
+        elif category == 'demographic_bias':
+            alternatives = [
+                "Avoid broad generalizations about groups",
+                "Focus on specific individuals or documented cases",
+                "Use inclusive language that doesn't stereotype"
+            ]
+        elif category == 'epistemological_bias':
+            alternatives = [
+                "Attribute claims to specific sources",
+                "Use qualifying language (may, appears, suggests)",
+                "Distinguish clearly between facts and opinions"
+            ]
+    
+    return alternatives[:3] if alternatives else ["Use more objective language", "Provide balanced perspective", "Include source attribution"]
+
+def check_context_balance(text: str, full_article: str) -> bool:
+    """Check if balancing information is provided elsewhere in article"""
+    # Simple check - in real implementation this would be more sophisticated
+    balance_indicators = [
+        'however', 'but', 'on the other hand', 'critics argue', 'supporters say',
+        'alternative view', 'different perspective', 'counterargument', 'in contrast'
+    ]
+    
+    return any(indicator in full_article.lower() for indicator in balance_indicators)
+
+def create_bias_visualization_bar(score: float) -> str:
+    """Create HTML for bias visualization bar"""
+    # Normalize score to 0-100 for positioning
+    position = ((score + 10) / 20) * 100
+    position = max(0, min(100, position))
+    
+    color = "red" if score > 2 else "orange" if score > 0 else "blue" if score < -2 else "orange" if score < 0 else "green"
+    
+    return f"""
+    <div style="width: 100%; height: 20px; background: linear-gradient(to right, #ff4444 0%, #ff8844 25%, #44ff44 45%, #44ff44 55%, #ff8844 75%, #ff4444 100%); border-radius: 10px; position: relative; margin: 5px 0;">
+        <div style="position: absolute; top: 0; left: {position}%; width: 4px; height: 100%; background: black; border-radius: 2px;"></div>
+        <div style="text-align: center; font-size: 8px; color: white; line-height: 20px;">Left ← → Right</div>
+    </div>
+    """
+
+def expand_missing_perspectives(original_perspectives: list, article_text: str) -> list:
+    """Expand missing perspectives with specific angles and severity"""
+    expanded = []
+    
+    # Always include these standard missing perspectives for political articles
+    standard_perspectives = [
+        {
+            'perspective': 'Military Strategic Analysis',
+            'severity': 'Moderate',
+            'specific_angles': [
+                'Tactical implications of current operations',
+                'Strategic objectives and military planning',
+                'Resource allocation and logistics considerations',
+                'International military cooperation aspects'
+            ],
+            'suggested_sources': ['Defense News', 'Military Times', 'Jane\'s Defence Weekly', 'Armed Forces experts'],
+            'impact': 'Missing military context may lead to incomplete understanding of conflict dynamics',
+            'confidence': 0.75
+        },
+        {
+            'perspective': 'International Law Framework',
+            'severity': 'Major',
+            'specific_angles': [
+                'Geneva Convention compliance analysis',
+                'International Court of Justice precedents',
+                'UN Charter violation assessments', 
+                'War crimes investigation procedures'
+            ],
+            'suggested_sources': ['International Court of Justice', 'UN Human Rights Council', 'Legal scholars', 'Amnesty International'],
+            'impact': 'Legal framework absence hinders proper accountability assessment',
+            'confidence': 0.85
+        },
+        {
+            'perspective': 'Humanitarian Impact Assessment',
+            'severity': 'High',
+            'specific_angles': [
+                'Civilian casualty verification methods',
+                'Refugee and displacement statistics',
+                'Medical facility and school damage reports',
+                'Long-term psychological trauma studies'
+            ],
+            'suggested_sources': ['UN OCHA', 'Doctors Without Borders', 'Red Cross/Red Crescent', 'Local humanitarian NGOs'],
+            'impact': 'Humanitarian gaps reduce understanding of human cost',
+            'confidence': 0.90
+        },
+        {
+            'perspective': 'Economic and Resource Analysis',
+            'severity': 'Moderate',
+            'specific_angles': [
+                'Infrastructure damage economic impact',
+                'Regional trade disruption effects',
+                'Energy supply chain implications',
+                'Reconstruction cost projections'
+            ],
+            'suggested_sources': ['World Bank', 'Regional economic institutions', 'Trade organizations', 'Economic analysts'],
+            'impact': 'Economic context missing affects long-term consequence understanding',
+            'confidence': 0.70
+        }
+    ]
+    
+    # Add original perspectives if they exist
+    for orig in original_perspectives:
+        if isinstance(orig, dict):
+            expanded.append(orig)
+    
+    # Add standard perspectives if not already covered
+    existing_types = [p.get('perspective', '').lower() for p in expanded]
+    
+    for std_perspective in standard_perspectives:
+        perspective_type = std_perspective['perspective'].lower()
+        if not any(existing_type in perspective_type or perspective_type in existing_type for existing_type in existing_types):
+            expanded.append(std_perspective)
+    
+    return expanded[:6]  # Limit to 6 total
+
+def enhance_comparative_analysis(original_comparative: dict, overall_score: float, article_text: str) -> dict:
+    """Enhance comparative analysis with concrete examples and distance scores"""
+    enhanced = original_comparative.copy() if original_comparative else {}
+    
+    # Generate framing examples based on bias score
+    if overall_score < -2:  # Left-leaning
+        enhanced.update({
+            'likely_left_framing': enhanced.get('likely_left_framing', 'Emphasize humanitarian concerns and civilian impact'),
+            'likely_right_framing': enhanced.get('likely_right_framing', 'Focus on security threats and defensive measures'),
+            'neutral_baseline': enhanced.get('neutral_baseline', 'Report verified facts with multiple source attribution'),
+            'left_examples': ['Highlight civilian casualties prominently', 'Frame as humanitarian crisis'],
+            'right_examples': ['Emphasize security justifications', 'Frame as defensive action'],
+            'current_proximity': 'Left-leaning outlets (CNN, MSNBC)',
+            'most_similar_outlet': 'CNN or Washington Post'
+        })
+    elif overall_score > 2:  # Right-leaning
+        enhanced.update({
+            'likely_left_framing': enhanced.get('likely_left_framing', 'Criticize military action and emphasize casualties'),
+            'likely_right_framing': enhanced.get('likely_right_framing', 'Support security measures and national defense'),
+            'neutral_baseline': enhanced.get('neutral_baseline', 'Present multiple perspectives with clear attribution'),
+            'left_examples': ['Question military necessity', 'Emphasize international condemnation'],
+            'right_examples': ['Support defensive measures', 'Highlight security achievements'],
+            'current_proximity': 'Right-leaning outlets (Fox News, NY Post)',
+            'most_similar_outlet': 'Fox News or Wall Street Journal'
+        })
+    else:  # Neutral
+        enhanced.update({
+            'likely_left_framing': enhanced.get('likely_left_framing', 'Focus on humanitarian impact and civilian protection'),
+            'likely_right_framing': enhanced.get('likely_right_framing', 'Emphasize security needs and defensive measures'),
+            'neutral_baseline': enhanced.get('neutral_baseline', 'Balanced reporting with multiple perspectives'),
+            'left_examples': ['Prioritize humanitarian angle', 'Question proportionality'],
+            'right_examples': ['Support security rationale', 'Emphasize threat reduction'],
+            'current_proximity': 'Center/Neutral outlets',
+            'most_similar_outlet': 'Reuters, AP, or NPR'
+        })
+    
+    return enhanced
+
+def analyze_bias_interactions(category_scores: dict, overall_score: float) -> list:
+    """Analyze how different bias types reinforce each other"""
+    interactions = []
+    
+    # Check which categories show significant bias
+    biased_categories = {cat: data for cat, data in category_scores.items() 
+                        if abs(data.get('score', 0)) > 1}
+    
+    if len(biased_categories) >= 2:
+        # Lexical + Informational interaction
+        if 'lexical_bias' in biased_categories and 'informational_bias' in biased_categories:
+            interactions.append({
+                'interaction_type': 'Lexical × Informational Bias Amplification',
+                'mechanism': 'Emotionally charged language amplifies the impact of selective information omission',
+                'amplification': 'High - emotional framing makes missing context less noticeable',
+                'example': 'Using "devastating attacks" while omitting defensive context creates stronger bias impression',
+                'impact_level': 'High'
+            })
+        
+        # Demographic + Epistemological interaction
+        if 'demographic_bias' in biased_categories and 'epistemological_bias' in biased_categories:
+            interactions.append({
+                'interaction_type': 'Demographic × Epistemological Bias Reinforcement',
+                'mechanism': 'Group stereotypes presented as factual certainty rather than opinion',
+                'amplification': 'Medium - false certainty makes stereotypes seem more credible',
+                'example': 'Presenting group generalizations without qualification or evidence',
+                'impact_level': 'Medium'
+            })
+        
+        # Informational + Epistemological interaction  
+        if 'informational_bias' in biased_categories and 'epistemological_bias' in biased_categories:
+            interactions.append({
+                'interaction_type': 'Informational × Epistemological Bias Synergy',
+                'mechanism': 'Information omissions increase impact of presenting opinion as settled fact',
+                'amplification': 'High - missing counterarguments make false certainty more convincing',
+                'example': 'Stating definitive conclusions while omitting contradictory evidence',
+                'impact_level': 'High'
+            })
+        
+        # All categories interaction
+        if len(biased_categories) >= 3:
+            interactions.append({
+                'interaction_type': 'Multi-Category Systemic Bias Pattern',
+                'mechanism': 'Multiple bias types create reinforcing echo chamber effect',
+                'amplification': 'Very High - creates comprehensive bias framework',
+                'example': 'Combining emotional language, selective facts, group stereotypes, and false certainty',
+                'impact_level': 'High'
+            })
+    
+    return interactions
+
+def enhance_actionable_feedback(original_feedback: dict, category_scores: dict, overall_score: float, missing_perspectives: list) -> dict:
+    """Generate enhanced, specific actionable feedback"""
+    enhanced = {}
+    
+    # Generate reader takeaways based on specific bias patterns
+    reader_takeaways = []
+    
+    if category_scores.get('lexical_bias', {}).get('score', 0) != 0:
+        reader_takeaways.append("Be aware of emotionally loaded language that may frame events with inherent bias")
+    
+    if category_scores.get('informational_bias', {}).get('score', 0) != 0:
+        reader_takeaways.append("Seek additional sources to fill information gaps and missing perspectives")
+    
+    if category_scores.get('demographic_bias', {}).get('score', 0) != 0:
+        reader_takeaways.append("Watch for group generalizations and seek individual stories over stereotypes")
+    
+    if category_scores.get('epistemological_bias', {}).get('score', 0) != 0:
+        reader_takeaways.append("Distinguish between factual reporting and opinion presented as certainty")
+    
+    # Media literacy guidance
+    media_literacy = []
+    
+    if overall_score > 2:
+        media_literacy.extend([
+            "This article leans right - seek left-leaning and neutral sources for balance",
+            "Pay attention to which voices and perspectives are prioritized or omitted",
+            "Consider how the framing might differ in outlets with different political orientations"
+        ])
+    elif overall_score < -2:
+        media_literacy.extend([
+            "This article leans left - seek right-leaning and neutral sources for balance", 
+            "Notice which aspects of the story receive emphasis or minimal coverage",
+            "Compare with conservative and centrist outlet coverage of the same events"
+        ])
+    else:
+        media_literacy.extend([
+            "While relatively balanced, all sources have some inherent perspective",
+            "Cross-reference with multiple sources to build complete understanding",
+            "Notice subtle framing choices even in neutral-appearing coverage"
+        ])
+    
+    # Author feedback
+    author_feedback = [
+        "Use more precise, neutral terminology instead of emotional descriptors",
+        "Include perspectives from all major stakeholders in the conflict",
+        "Provide clear source attribution for all significant claims",
+        "Balance reporting of different viewpoints rather than emphasizing one side"
+    ]
+    
+    # Editor feedback  
+    editor_feedback = [
+        "Review for subtle bias in headline and subhead phrasing",
+        "Ensure quotes represent range of viewpoints proportionally",
+        "Check that statistical data includes relevant context and comparison",
+        "Verify that opinion elements are clearly labeled and separated from news"
+    ]
+    
+    enhanced.update({
+        'reader_takeaways': reader_takeaways,
+        'media_literacy': media_literacy,
+        'author_feedback': author_feedback,
+        'editor_feedback': editor_feedback
+    })
+    
+    return enhanced
+
 def display_bias_analysis(result):
     """Display BABE-enhanced bias analysis results with comprehensive visualizations."""
     if not result or result.get('error'):
@@ -949,15 +1808,27 @@ def display_babe_analysis(babe_result, full_result):
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
+        # Enhanced BABE Score interpretation
         if overall_score > 2:
             st.error(f"**BABE Bias Score**\n{overall_score}/10\n(Right-leaning)")
+            interpretation = "This indicates moderate to strong right-leaning bias across multiple categories."
         elif overall_score < -2:
             st.error(f"**BABE Bias Score**\n{overall_score}/10\n(Left-leaning)")
+            interpretation = "This indicates moderate to strong left-leaning bias across multiple categories."
         else:
             st.success(f"**BABE Bias Score**\n{overall_score}/10\n(Neutral)")
+            interpretation = "This indicates relatively balanced coverage with minimal detectable bias."
         
-        # Show confidence interval
-        st.caption(f"95% CI: [{confidence_interval[0]}, {confidence_interval[1]}]")
+        # Show confidence interval with plain language explanation
+        st.caption(f"95% CI: [{confidence_interval[0]:.1f}, {confidence_interval[1]:.1f}]")
+        st.caption(f"The true bias score is likely between {confidence_interval[0]:.1f} and {confidence_interval[1]:.1f}")
+        
+        # Visual bias indicator bar
+        bias_bar_html = create_bias_visualization_bar(overall_score)
+        st.markdown(bias_bar_html, unsafe_allow_html=True)
+        
+        # Score interpretation
+        st.info(f"**Interpretation:** {interpretation}")
     
     with col2:
         evidence_emoji = {"strong": "🟢", "medium": "🟡", "weak": "🔴"}
@@ -988,42 +1859,77 @@ def display_babe_analysis(babe_result, full_result):
     # === BABE CATEGORY BREAKDOWN ===
     st.markdown("### 📊 BABE Category Analysis")
     
-    # Create interactive category display
+    # Create interactive category display with enhanced structure
     tab1, tab2, tab3, tab4 = st.tabs(["📝 Lexical Bias", "📰 Informational Bias", "👥 Demographic Bias", "🧠 Epistemological Bias"])
     
     categories = ['lexical_bias', 'informational_bias', 'demographic_bias', 'epistemological_bias']
     tab_mapping = [tab1, tab2, tab3, tab4]
     
+    # Category explanations for better structure
+    category_explanations = {
+        'lexical_bias': "Measures emotional language, value-laden adjectives, and word choice that frames events with inherent bias.",
+        'informational_bias': "Evaluates selective omission, cherry-picked statistics, and missing context that skews understanding.", 
+        'demographic_bias': "Identifies unfair representation of groups through stereotyping, tokenism, or systematic exclusion.",
+        'epistemological_bias': "Detects opinion presented as fact, false certainty, and poor attribution of claims."
+    }
+    
     for i, (category, tab) in enumerate(zip(categories, tab_mapping)):
         with tab:
             cat_data = category_scores.get(category, {})
             
-            col1, col2, col3 = st.columns(3)
+            # Add category explanation at the top
+            st.markdown(f"**What this measures:** {category_explanations[category]}")
+            st.markdown("---")
+            
+            # Enhanced scoring with severity indicators
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
                 score = cat_data.get('score', 0)
+                severity = "High" if abs(score) > 3 else "Moderate" if abs(score) > 1.5 else "Low"
+                severity_color = "🔴" if abs(score) > 3 else "🟡" if abs(score) > 1.5 else "🟢"
+                
                 if abs(score) > 2:
                     st.error(f"**Score: {score}**")
                 elif abs(score) > 1:
                     st.warning(f"**Score: {score}**")
                 else:
                     st.success(f"**Score: {score}**")
+                st.caption(f"{severity_color} **Severity:** {severity}")
             
             with col2:
                 precision = cat_data.get('precision', 0)
-                recall = cat_data.get('recall', 0)
-                st.metric("Precision", f"{precision:.2f}")
-                st.metric("Recall", f"{recall:.2f}")
+                st.metric("Precision", f"{precision:.3f}", help="How many detected biases are actually biased")
             
             with col3:
+                recall = cat_data.get('recall', 0)
+                st.metric("Recall", f"{recall:.3f}", help="How many actual biases were detected")
+            
+            with col4:
                 f1_score = cat_data.get('f1_score', 0)
-                st.metric("F1-Score", f"{f1_score:.2f}")
-                
-            # Evidence for this category
+                st.metric("F1-Score", f"{f1_score:.3f}", help="Balanced measure of precision and recall")
+            
+            # Enhanced Evidence Presentation
             evidence = cat_data.get('evidence', [])
             if evidence:
-                st.markdown("**📋 Evidence:**")
-                for item in evidence[:5]:  # Limit to 5 items
-                    st.markdown(f"• {item}")
+                st.markdown("**📋 Evidence Analysis:**")
+                for idx, item in enumerate(evidence[:5]):  # Limit to 5 items
+                    with st.expander(f"Evidence {idx+1}: \"{item[:60]}...\""):
+                        # Extract or generate bias rule explanation
+                        bias_rule = get_bias_rule_explanation(item, category)
+                        
+                        st.markdown(f"**🎯 Biased Text:** \"{item}\"")
+                        st.markdown(f"**📖 Bias Type:** {bias_rule}")
+                        
+                        # Generate multiple neutral alternatives
+                        neutral_alternatives = generate_neutral_alternatives(item, category)
+                        st.markdown("**🔄 Neutral Alternatives:**")
+                        for alt_idx, alt in enumerate(neutral_alternatives[:3], 1):
+                            st.markdown(f"  {alt_idx}. {alt}")
+                        
+                        # Context check
+                        context_available = check_context_balance(item, full_result.get('full_text', ''))
+                        context_status = "✅ Yes" if context_available else "❌ No"
+                        st.markdown(f"**⚖️ Balancing Information Provided:** {context_status}")
             else:
                 st.success("✅ No significant bias detected in this category")
     
@@ -1046,47 +1952,177 @@ def display_babe_analysis(babe_result, full_result):
                     st.info(evidence.get('alternative_framing', 'Use more balanced language'))
                     st.metric("Confidence", f"{evidence.get('confidence', 0):.0%}")
     
-    # === MISSING PERSPECTIVES ===
+    # === EXPANDED MISSING PERSPECTIVES ===
     missing_perspectives = full_result.get('missing_perspectives', [])
-    if missing_perspectives:
-        st.markdown("### ❓ Missing Perspectives Identified")
+    if missing_perspectives or overall_score != 0:  # Show even if empty but biased
+        st.markdown("### ❓ Missing Perspectives Analysis")
         
-        for perspective in missing_perspectives:
-            with st.expander(f"🔍 {perspective.get('perspective', 'Unknown perspective')}"):
+        # Expand missing perspectives with specific angles
+        expanded_perspectives = expand_missing_perspectives(missing_perspectives, full_result.get('full_text', ''))
+        
+        for perspective in expanded_perspectives[:6]:  # Show up to 6 perspectives
+            severity = perspective.get('severity', 'Moderate')
+            severity_emoji = {"Major": "🔴", "Moderate": "🟡", "Minor": "🟢"}.get(severity, "🟡")
+            
+            with st.expander(f"{severity_emoji} {perspective.get('perspective', 'Unknown perspective')} ({severity} omission)"):
                 st.markdown(f"**📊 Impact:** {perspective.get('impact', 'Unknown impact')}")
-                st.markdown(f"**📰 Suggested Sources:**")
-                for source in perspective.get('suggested_sources', []):
-                    st.markdown(f"• {source}")
-                st.metric("Confidence", f"{perspective.get('confidence', 0):.0%}")
+                st.markdown(f"**🎯 Specific Missing Angles:**")
+                
+                angles = perspective.get('specific_angles', [])
+                for angle in angles[:4]:  # Show up to 4 specific angles
+                    st.markdown(f"  • {angle}")
+                
+                st.markdown(f"**📰 Suggested Sources for Balance:**")
+                sources = perspective.get('suggested_sources', [])
+                for source in sources[:4]:
+                    st.markdown(f"  • {source}")
+                    
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Confidence", f"{perspective.get('confidence', 0):.0%}")
+                with col2:
+                    st.metric("Severity", severity)
     
-    # === COMPARATIVE ANALYSIS ===
+    # === ENHANCED COMPARATIVE ANALYSIS ===
     comparative = full_result.get('comparative_analysis', {})
-    if comparative:
+    if comparative or overall_score != 0:  # Show even if no data but article is biased
         st.markdown("### ⚖️ Cross-Source Framing Comparison")
+        
+        # Generate or enhance comparative analysis
+        enhanced_comparative = enhance_comparative_analysis(comparative, overall_score, full_result.get('full_text', ''))
         
         col1, col2, col3 = st.columns(3)
         
         with col1:
             st.markdown("**🔵 Likely Left Framing:**")
-            st.info(comparative.get('likely_left_framing', 'Not available'))
+            left_framing = enhanced_comparative.get('likely_left_framing', 'Focus on humanitarian impact and civilian casualties.')
+            st.info(left_framing)
+            
+            # Add concrete examples
+            left_examples = enhanced_comparative.get('left_examples', [])
+            if left_examples:
+                st.markdown("**Examples:**")
+                for ex in left_examples[:2]:
+                    st.caption(f"• {ex}")
         
         with col2:
             st.markdown("**🟢 Neutral Baseline:**")
-            st.success(comparative.get('neutral_baseline', 'Not available'))
+            neutral_baseline = enhanced_comparative.get('neutral_baseline', 'Report facts with multiple source attribution.')
+            st.success(neutral_baseline)
+            
+            # Distance from neutral with visual indicator
+            distance_from_neutral = abs(overall_score) / 10.0
+            st.metric("Distance from Neutral", f"{distance_from_neutral:.2f}", 
+                     help="0.0 = perfectly neutral, 1.0 = maximum bias")
         
         with col3:
             st.markdown("**🔴 Likely Right Framing:**")
-            st.error(comparative.get('likely_right_framing', 'Not available'))
+            right_framing = enhanced_comparative.get('likely_right_framing', 'Emphasize security concerns and national interests.')
+            st.error(right_framing)
+            
+            # Add concrete examples
+            right_examples = enhanced_comparative.get('right_examples', [])
+            if right_examples:
+                st.markdown("**Examples:**")
+                for ex in right_examples[:2]:
+                    st.caption(f"• {ex}")
         
-        current_proximity = comparative.get('current_proximity', 'unknown')
-        st.markdown(f"**📊 This Article Closest To:** {current_proximity}")
+        # Enhanced proximity analysis
+        current_proximity = enhanced_comparative.get('current_proximity', 'Neutral baseline')
+        similar_outlet = enhanced_comparative.get('most_similar_outlet', 'Reuters/AP')
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"**📊 This Article Closest To:** {current_proximity}")
+        with col2:
+            st.markdown(f"**📰 Most Similar Outlet:** {similar_outlet}")
+            st.caption("Based on framing patterns and bias indicators")
     
-    # === ACTIONABLE FEEDBACK ===
-    feedback = full_result.get('actionable_feedback', {})
-    if feedback:
-        st.markdown("### 💡 Actionable Recommendations")
+    # === NEW: BIAS INTERACTION ANALYSIS ===
+    if overall_score != 0:  # Only show if bias is detected
+        st.markdown("### 🧩 Bias Interaction Analysis")
         
-        tab1, tab2, tab3 = st.tabs(["👥 For Readers", "✏️ For Authors", "📝 For Editors"])
+        bias_interactions = analyze_bias_interactions(category_scores, overall_score)
+        
+        st.markdown("**How Different Bias Types Reinforce Each Other:**")
+        for interaction in bias_interactions[:4]:  # Show top 4 interactions
+            with st.expander(f"🔗 {interaction.get('interaction_type', 'Unknown Interaction')}"):
+                st.markdown(f"**🎯 Mechanism:** {interaction.get('mechanism', 'Not specified')}")
+                st.markdown(f"**📈 Amplification Effect:** {interaction.get('amplification', 'Unknown')}")
+                st.markdown(f"**🔍 Example:** {interaction.get('example', 'Not provided')}")
+                
+                impact_level = interaction.get('impact_level', 'Medium')
+                impact_color = {"High": "🔴", "Medium": "🟡", "Low": "🟢"}.get(impact_level, "🟡")
+                st.markdown(f"**{impact_color} Impact Level:** {impact_level}")
+    
+    # === ENHANCED ACTIONABLE FEEDBACK ===
+    feedback = full_result.get('actionable_feedback', {})
+    if feedback or overall_score != 0:  # Generate feedback even if not provided
+        st.markdown("### 💡 Enhanced Actionable Recommendations")
+        
+        enhanced_feedback = enhance_actionable_feedback(feedback, category_scores, overall_score, missing_perspectives)
+        
+        tab1, tab2, tab3, tab4 = st.tabs(["👥 What This Means for Readers", "✏️ For Authors", "📝 For Editors", "🔍 Model Insights"])
+        
+        with tab1:
+            st.markdown("**🎯 Reader Takeaway (Key Points to Remember):**")
+            reader_takeaways = enhanced_feedback.get('reader_takeaways', [])
+            for idx, takeaway in enumerate(reader_takeaways[:4], 1):
+                st.markdown(f"**{idx}.** {takeaway}")
+            
+            st.markdown("---")
+            st.markdown("**📚 Media Literacy Guidance:**")
+            literacy_guidance = enhanced_feedback.get('media_literacy', [])
+            for guidance in literacy_guidance[:3]:
+                st.info(f"💡 {guidance}")
+        
+        with tab2:
+            author_feedback = enhanced_feedback.get('author_feedback', [])
+            for feedback_item in author_feedback:
+                st.markdown(f"• {feedback_item}")
+        
+        with tab3:
+            editor_feedback = enhanced_feedback.get('editor_feedback', [])
+            for feedback_item in editor_feedback:
+                st.markdown(f"• {feedback_item}")
+        
+        # === NEW: MODEL TRANSPARENCY SECTION ===
+        with tab4:
+            st.markdown("**🔬 Analysis Methodology Transparency:**")
+            
+            # Explain metrics in plain language
+            st.markdown("**📊 Metric Explanations:**")
+            st.markdown("""
+            - **Precision**: How accurate our bias detection is (fewer false positives)
+            - **Recall**: How complete our bias detection is (fewer missed biases)
+            - **F1-Score**: Balanced measure combining precision and recall
+            - **Confidence Interval**: Range where the true bias score likely falls
+            """)
+            
+            # Model limitations
+            st.markdown("**⚠️ Analysis Limitations:**")
+            limitations = [
+                "Bias detection is probabilistic and may not capture sarcasm or complex rhetorical framing",
+                "Cultural and contextual nuances may be missed in automated analysis", 
+                "Short articles provide less context for comprehensive bias assessment",
+                "Analysis focuses on observable patterns, not author intent",
+                "Cross-cultural bias patterns may vary from training data"
+            ]
+            
+            for limitation in limitations:
+                st.warning(f"• {limitation}")
+            
+            # Analysis confidence and calibration
+            st.markdown("**✅ Quality Indicators:**")
+            quality_metrics = {
+                "Analysis Confidence": f"{evidence_strength.title()} evidence strength",
+                "Cross-Validation": f"{int(cross_validation.get('expert_consensus', 0) * 100)}% expert consensus", 
+                "Sample Size": f"{len(highlighted_evidence)} bias instances analyzed",
+                "Category Coverage": f"{len([c for c in category_scores.values() if c.get('score', 0) != 0])}/4 categories show bias"
+            }
+            
+            for metric, value in quality_metrics.items():
+                st.success(f"**{metric}:** {value}")
         
         with tab1:
             for item in feedback.get('for_readers', []):
@@ -1465,21 +2501,58 @@ def main():
             # Additional metadata for enhanced bias analysis
             if analysis_mode in ["Bias Analysis"]:
                 st.markdown("### 📋 Article Metadata (Optional - Enhances Bias Analysis)")
-                col1, col2 = st.columns(2)
                 
-                with col1:
-                    article_title = st.text_input(
-                        "Article Title",
-                        placeholder="Enter the article headline/title",
-                        help="Helps with contextual analysis"
-                    )
+                # Check if we have auto-detected metadata from URL fetch or file upload
+                has_auto_title = 'fetched_title' in st.session_state and st.session_state['fetched_title']
+                has_auto_url = 'fetched_url' in st.session_state and st.session_state['fetched_url']
                 
-                with col2:
-                    source_url = st.text_input(
-                        "Source URL or Domain",
-                        placeholder="e.g., cnn.com, foxnews.com, reuters.com",
-                        help="Enables source bias profiling and publisher context"
-                    )
+                # Checkbox to enable/disable metadata inclusion
+                include_metadata = st.checkbox(
+                    "🏷️ Include article metadata for enhanced analysis",
+                    value=has_auto_title or has_auto_url,
+                    help="Including title and source improves bias detection accuracy"
+                )
+                
+                if include_metadata:
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        # Auto-populate title if available, otherwise show input
+                        if has_auto_title:
+                            article_title = st.text_input(
+                                "Article Title",
+                                value=st.session_state['fetched_title'],
+                                help="Auto-detected from article. You can edit if needed."
+                            )
+                        else:
+                            article_title = st.text_input(
+                                "Article Title",
+                                placeholder="Enter the article headline/title",
+                                help="Helps with contextual analysis"
+                            )
+                    
+                    with col2:
+                        # Auto-populate URL if available, otherwise show input
+                        if has_auto_url:
+                            source_url = st.text_input(
+                                "Source URL or Domain",
+                                value=st.session_state['fetched_url'],
+                                help="Auto-detected from URL input. You can edit if needed."
+                            )
+                        else:
+                            source_url = st.text_input(
+                                "Source URL or Domain", 
+                                placeholder="e.g., cnn.com, foxnews.com, reuters.com",
+                                help="Enables source bias profiling and publisher context"
+                            )
+                    
+                    # Show what metadata will be included
+                    if article_title or source_url:
+                        st.success(f"✅ Metadata included: {f'Title: {article_title[:50]}...' if article_title else ''}{' | ' if article_title and source_url else ''}{f'Source: {source_url}' if source_url else ''}")
+                else:
+                    article_title = None
+                    source_url = None
+                    st.info("💡 **Tip:** Including metadata significantly improves bias analysis accuracy by providing context about the source and framing.")
             else:
                 article_title = None
                 source_url = None
@@ -1639,30 +2712,74 @@ def main():
                                 )
                                 if extracted_topics['success']:
                                     topic_query = extracted_topics['search_terms']
-                                    st.success(f"✨ **Smart Topic Extraction Successful!**")
+                                    extraction_method = extracted_topics.get('extraction_method', 'ai')
+                                    
+                                    if extraction_method == 'local':
+                                        st.success(f"✅ **Local Topic Extraction Completed!**")
+                                        st.info(f"**Method:** Text analysis (no API key required)")
+                                    else:
+                                        st.success(f"✨ **AI Topic Extraction Successful!**")
+                                        st.info(f"**Method:** {settings['model'].upper()} AI analysis")
+                                    
                                     st.info(f"**Original Title:** {result['title']}")
                                     st.info(f"**Key Topics Found:** {topic_query}")
                                     
                                     # Show the summary that was used for extraction - auto-expanded for transparency
-                                    with st.expander("📄 Article Summary Used for Topic Extraction", expanded=True):
+                                    with st.expander("📄 Article Analysis Used for Topic Extraction", expanded=True):
                                         st.markdown(f"**Summary:** {extracted_topics['summary']}")
                                         st.markdown(f"**Key Themes:** {', '.join(extracted_topics['themes'])}")
                                         st.markdown("---")
-                                        st.markdown("🎯 **This information will be used to find related articles across diverse news sources.**")
+                                        if extraction_method == 'local':
+                                            st.markdown("🔍 **Local Analysis:** Keywords extracted using text analysis patterns.")
+                                        else:
+                                            st.markdown("🎯 **AI Analysis:** Advanced topic modeling and summarization used.")
+                                        st.markdown("**This information will be used to find related articles across diverse news sources.**")
                                     
                                     # Store all extracted information for seamless workflow
                                     st.session_state['extracted_topic'] = topic_query
-                                    st.session_state['extraction_method'] = 'smart_summary'
+                                    st.session_state['extraction_method'] = extraction_method
                                     st.session_state['original_url'] = initial_url
                                     st.session_state['original_title'] = result['title']
                                     st.session_state['article_content'] = result['content']
                                     st.session_state['extraction_data'] = extracted_topics
                                 else:
-                                    # Fallback to title-based extraction
+                                    # Enhanced fallback handling with specific user guidance
                                     topic_query = result['title']
-                                    st.warning("⚠️ Smart extraction failed, using title as fallback")
+                                    fallback_reason = extracted_topics.get('fallback_reason', 'unknown')
+                                    
+                                    if fallback_reason == 'no_api_key':
+                                        st.error("🚫 **Smart Topic Extraction Failed: Missing API Key**")
+                                        st.markdown("""
+                                        **Issue:** AI-powered topic extraction requires an API key for the selected model.
+                                        
+                                        **Quick Fix Options:**
+                                        1. **Add API Key:** Enter your OpenAI API key in the sidebar → 🔑 API Keys
+                                        2. **Switch to Local Mode:** Change model to 'local' in the sidebar (basic extraction)
+                                        3. **Manual Topic:** Use 'Search by Topic' mode instead and enter your own search terms
+                                        
+                                        **Current Fallback:** Using article title as search term (less accurate results expected)
+                                        """)
+                                        st.info(f"**Fallback Search Term:** {topic_query}")
+                                    elif fallback_reason == 'config_error':
+                                        st.error("⚠️ **Smart Topic Extraction Failed: Configuration Error**")
+                                        st.markdown("""
+                                        **Issue:** There was a problem setting up the AI analysis engine.
+                                        
+                                        **Suggested Actions:**
+                                        1. Check that your API key is valid
+                                        2. Try switching to 'local' model mode
+                                        3. Refresh the page and try again
+                                        
+                                        **Current Fallback:** Using article title as search term
+                                        """)
+                                    else:
+                                        st.warning("⚠️ **Smart Topic Extraction Failed: AI Analysis Error**")
+                                        st.info(f"**Fallback:** Using article title as search term: '{topic_query}'")
+                                        st.caption("💡 **Tip:** For better results, ensure your API key is valid or try the 'Search by Topic' mode.")
+                                    
                                     st.session_state['extracted_topic'] = topic_query
                                     st.session_state['extraction_method'] = 'title_fallback'
+                                    st.session_state['extraction_error'] = extracted_topics.get('error', 'Unknown error')
                                     st.session_state['original_url'] = initial_url
                                     st.session_state['original_title'] = result['title']
                                     st.session_state['article_content'] = result['content']
@@ -1866,221 +2983,330 @@ def main():
                 # Display Source Convergence Analysis results
                 if st.session_state.last_results and st.session_state.last_results['type'] == 'Source Convergence Analysis':
                     data = st.session_state.last_results['data']
-                    
-                    st.markdown(f"# 🎯 Convergence Analysis: {data['topic']}")
-                    
-                    # Overview metrics
-                    col1, col2, col3, col4 = st.columns(4)
-                    
-                    with col1:
-                        st.metric("Sources Analyzed", data['num_sources_analyzed'])
-                    
-                    with col2:
-                        diversity_color = "🟢" if data['diversity_score'] > 6 else "🟡" if data['diversity_score'] > 3 else "🔴"
-                        st.metric("Diversity Score", f"{data['diversity_score']:.1f}/10")
-                        st.markdown(f"{diversity_color}")
-                    
-                    with col3:
-                        credibility_color = "🟢" if data['avg_credibility'] > 7 else "🟡" if data['avg_credibility'] > 5 else "🔴"
-                        st.metric("Avg Credibility", f"{data['avg_credibility']:.1f}/10")
-                        st.markdown(f"{credibility_color}")
-                    
-                    with col4:
-                        consensus = data['convergence']['consensus_level']
-                        consensus_color = "🟢" if consensus > 70 else "🟡" if consensus > 40 else "🔴"
-                        st.metric("Consensus Level", f"{consensus:.0f}%")
-                        st.markdown(f"{consensus_color}")
-                    
-                    # Source diversity visualization
-                    st.markdown("## 📊 Source Analysis")
-                    
-                    if data['source_analysis']:
-                        import pandas as pd
-                        
-                        # Create source analysis table
-                        source_df = pd.DataFrame([
-                            {
-                                'Source': s['source'],
-                                'Political Bias': f"{s['bias_score']:+d}" if s['bias_score'] != 0 else "Neutral",
-                                'Credibility': f"{s['credibility']}/10",
-                                'Bias Direction': "Left" if s['bias_score'] < 0 else "Right" if s['bias_score'] > 0 else "Center"
-                            }
-                            for s in data['source_analysis']
-                        ])
-                        
-                        st.dataframe(source_df, use_container_width=True, hide_index=True)
-                        
-                        # Bias distribution chart
-                        bias_scores = [s['bias_score'] for s in data['source_analysis']]
-                        if bias_scores:
-                            st.markdown("### 📈 Political Bias Distribution")
-                            
-                            left_count = sum(1 for b in bias_scores if b < -1)
-                            center_count = sum(1 for b in bias_scores if -1 <= b <= 1) 
-                            right_count = sum(1 for b in bias_scores if b > 1)
-                            
-                            col1, col2, col3 = st.columns(3)
-                            with col1:
-                                st.metric("Left-Leaning", left_count, help="Sources with bias score < -1")
-                            with col2:
-                                st.metric("Center/Neutral", center_count, help="Sources with bias score between -1 and +1") 
-                            with col3:
-                                st.metric("Right-Leaning", right_count, help="Sources with bias score > +1")
-                    
-                    # Convergence points and disputed claims
-                    st.markdown("## 🎯 Truth Analysis")
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.markdown('<div class="success-box"><h4>✅ Convergence Points</h4>', unsafe_allow_html=True)
-                        st.markdown("*Facts that multiple sources agree on (likely true):*")
-                        
-                        if data['convergence']['convergence_points']:
-                            for point in data['convergence']['convergence_points']:
-                                st.markdown(f"• {point}")
-                        else:
-                            st.markdown("• No strong convergence points detected")
-                            st.markdown("• Sources show significant disagreement on key facts")
-                        
-                        st.markdown('</div>', unsafe_allow_html=True)
-                    
-                    with col2:
-                        st.markdown('<div class="error-box"><h4>⚠️ Disputed Claims</h4>', unsafe_allow_html=True)
-                        st.markdown("*Facts where sources disagree (uncertain/controversial):*")
-                        
-                        if data['convergence']['disputed_claims']:
-                            for claim in data['convergence']['disputed_claims']:
-                                st.markdown(f"• {claim}")
-                        else:
-                            st.markdown("• High consensus across sources")
-                            st.markdown("• Few disputed facts detected")
-                        
-                        st.markdown('</div>', unsafe_allow_html=True)
-                    
-                    # Individual article summaries
-                    st.markdown("## 📄 Individual Source Analysis")
-                    
-                    for i, article in enumerate(data['articles']):
-                        with st.expander(f"📰 {article['source']}: {article['title'][:100]}..."):
-                            
-                            col1, col2 = st.columns([2, 1])
-                            
-                            with col1:
-                                st.markdown(f"**URL:** {article['url']}")
-                                st.markdown(f"**Content Preview:**")
-                                st.text(article['content'][:300] + "...")
-                            
-                            with col2:
-                                source_info = article.get('source_info', {})
-                                
-                                bias_score = source_info.get('bias_score', 0)
-                                bias_text = f"{bias_score:+d}" if bias_score != 0 else "Neutral"
-                                bias_color = "🔴" if abs(bias_score) > 2 else "🟡" if abs(bias_score) > 0 else "🟢"
-                                
-                                st.markdown(f"**Political Bias:** {bias_color} {bias_text}")
-                                st.markdown(f"**Credibility:** {source_info.get('credibility', 5)}/10")
-                            
-                            # Show analysis results if available
-                            if article.get('analysis'):
-                                st.markdown("**Key Points:**")
-                                analysis = article['analysis']
-                                
-                                if isinstance(analysis, dict):
-                                    if analysis.get('key_points'):
-                                        key_points = analysis['key_points']
-                                        if isinstance(key_points, list) and len(key_points) > 0:
-                                            for point in key_points[:3]:
-                                                if isinstance(point, str):
-                                                    st.markdown(f"• {point}")
-                                    elif analysis.get('summary'):
-                                        summary = analysis['summary']
-                                        if isinstance(summary, str) and len(summary) > 0:
-                                            st.markdown(f"• {summary[:200]}...")
-                                        else:
-                                            st.markdown(f"• {str(summary)[:200]}...")
-                                else:
-                                    st.markdown(f"• {str(analysis)[:200]}...")
-                    
-                    # Methodology notes
-                    st.markdown("---")
-                    with st.expander("🔬 Methodology & Limitations"):
-                        st.markdown("""
-                        **How This Analysis Works:**
-                        - Searches for articles using news APIs and RSS feeds
-                        - Analyzes source credibility based on established media bias databases
-                        - Uses AI to extract key claims and identify consensus vs disputed points
-                        - Weights results based on source credibility and political diversity
-                        
-                        **Limitations:**
-                        - Search results may not capture all relevant coverage
-                        - Source bias ratings are based on general assessments, not article-specific
-                        - Convergence detection uses simplified text analysis (could be enhanced with NLP)
-                        - Some high-quality sources may be missed due to paywall restrictions
-                        - Recent breaking news may have limited diverse coverage available
-                        
-                        **Best Practices:**
-                        - Higher source diversity = more reliable convergence analysis
-                        - Consider credibility scores when weighing consensus points
-                        - Look for both what sources agree AND disagree on
-                        - Supplement with additional research on disputed claims
-                        """)
-                    
-                    # Export options for convergence analysis
-                    st.markdown("---")
-                    st.markdown("## 📥 Export Results")
-                    
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        # Create summary report
-                        report_content = f"""SOURCE CONVERGENCE ANALYSIS: {data['topic']}
-Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}
-
-ANALYSIS OVERVIEW:
-- Sources Analyzed: {data['num_sources_analyzed']}
-- Diversity Score: {data['diversity_score']:.1f}/10
-- Average Credibility: {data['avg_credibility']:.1f}/10
-- Consensus Level: {data['convergence']['consensus_level']:.0f}%
-
-CONVERGENCE POINTS (Likely True):
-"""
-                        for point in data['convergence']['convergence_points']:
-                            report_content += f"• {point}\n"
-                        
-                        report_content += "\nDISPUTED CLAIMS (Uncertain):\n"
-                        for claim in data['convergence']['disputed_claims']:
-                            report_content += f"• {claim}\n"
-                        
-                        report_content += "\nSOURCE BREAKDOWN:\n"
-                        for article in data['articles']:
-                            source_info = article.get('source_info', {})
-                            bias_score = source_info.get('bias_score', 0)
-                            report_content += f"- {article['source']}: Bias {bias_score:+d}, Credibility {source_info.get('credibility', 5)}/10\n"
-                        
-                        st.download_button(
-                            label="📄 Download Report",
-                            data=report_content,
-                            file_name=f"convergence_analysis_{data['topic'].replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                            mime="text/plain"
-                        )
-                    
-                    with col2:
-                        # JSON export
-                        json_content = json.dumps(data, indent=2, ensure_ascii=False, default=str)
-                        st.download_button(
-                            label="📋 Download JSON",
-                            data=json_content,
-                            file_name=f"convergence_data_{data['topic'].replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                            mime="application/json"
-                        )
-                    
-                    with col3:
-                        if st.button("🗑️ Clear Results", key="clear_results_2"):
-                            st.session_state.last_results = None
-                            st.rerun()
+                    display_convergence_analysis_results(data, settings)
                 else:
-                    st.info("No convergence analysis results yet. Use the 'Topic Search' tab to analyze multiple sources on a topic.")
+                    st.info("No convergence analysis results yet. Use the 'Topic Search' tab to analyze multiple sources.")
+                    
+                    with st.expander("💡 What is a Truth Map?", expanded=True):
+                        st.markdown("""
+                        **The Truth Map** is a sophisticated analysis that goes beyond simple fact-checking:
+                        
+                        **🗺️ What You'll See:**
+                        • **Widely Reported**: Claims most sources agree on (high confidence)
+                        • **Disputed/Framed Differently**: Same facts, different interpretation
+                        • **Missing from Some Coverage**: What some sources report but others omit
+                        • **Source Perspective Distances**: How differently sources tell the story
+                        
+                        **🎯 Why This Matters:**
+                        Instead of claiming to find "the truth," this system shows you:
+                        - What sources agree/disagree on
+                        - How bias and framing affect coverage  
+                        - Information gaps you should investigate
+                        - The complexity behind seemingly simple stories
+                        
+                        **🔬 The Method:**
+                        1. **Claim Extraction**: Break articles into atomic factual statements
+                        2. **Similarity Clustering**: Group the same claims expressed differently  
+                        3. **Agreement Scoring**: Weight by source diversity and consistency
+                        4. **Framing Analysis**: Detect sentiment and loaded language differences
+                        5. **Omission Detection**: Find claims missing from some sources
+                        6. **Truth Mapping**: Honest synthesis of what's agreed, contested, and missing
+                        """)
+            
+def display_truth_map(truth_map, topic, source_analysis, num_sources):
+    """
+    Display the enhanced Truth Map analysis results.
+    """
+    st.markdown(f"# 🗺️ Truth Map: {topic}")
+    st.caption(f"Analysis completed: {truth_map.get('timestamp', 'Unknown time')}")
+    
+    # Overview metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Sources Analyzed", num_sources)
+    
+    with col2:
+        st.metric("Claims Extracted", truth_map.get('claims_extracted', 0))
+    
+    with col3:
+        widely_reported = len(truth_map.get('widely_reported', []))
+        st.metric("Widely Agreed", widely_reported, 
+                 help="Claims reported by most sources with high confidence")
+    
+    with col4:
+        disputed = len(truth_map.get('disputed_framed_differently', []))
+        st.metric("Disputed/Framed", disputed,
+                 help="Claims with different framing or limited agreement")
+    
+    # Source Analysis
+    st.markdown("## 📊 Source Analysis")
+    
+    if source_analysis:
+        import pandas as pd
+        
+        # Create source analysis table
+        source_df = pd.DataFrame([
+            {
+                'Source': s['source'],
+                'Political Bias': f"{s['bias_score']:+d}" if s['bias_score'] != 0 else "Neutral",
+                'Credibility': f"{s['credibility']}/10",
+                'Bias Direction': "Left" if s['bias_score'] < 0 else "Right" if s['bias_score'] > 0 else "Center"
+            }
+            for s in source_analysis
+        ])
+        
+        st.dataframe(source_df, use_container_width=True, hide_index=True)
+        
+        # Perspective distances
+        if truth_map.get('source_perspective_distances'):
+            st.markdown("### 🔄 Source Perspective Distances")
+            st.caption("How differently sources are telling the story")
+            
+            for distance in truth_map['source_perspective_distances'][:5]:  # Show top 5
+                interpretation = distance['interpretation']
+                
+                if interpretation == 'similar_stories':
+                    icon = "🟢"
+                    desc = "Very similar coverage"
+                elif interpretation == 'different_emphasis':
+                    icon = "🟡"
+                    desc = "Same story, different emphasis"
+                else:
+                    icon = "🔴"
+                    desc = "Fundamentally different stories"
+                
+                st.markdown(f"{icon} **{distance['source_pair']}**: {desc} "
+                           f"(Overlap: {distance['story_overlap']:.1%})")
+    
+    # The Truth Map - Main Results
+    st.markdown("## 🗺️ The Truth Map")
+    st.markdown("*This system doesn't claim to show 'the truth' — it shows what's agreed on, contested, and missing.*")
+    
+    # Widely Reported Section
+    if truth_map.get('widely_reported'):
+        st.markdown("### ✅ Widely Reported")
+        st.markdown("*Claims reported by most sources with high confidence*")
+        
+        for claim_info in truth_map['widely_reported']:
+            with st.expander(f"📄 {claim_info['claim'][:100]}...", expanded=False):
+                st.markdown(f"**Full Claim:** {claim_info['claim']}")
+                st.markdown(f"**Sources Reporting:** {', '.join(claim_info['sources_reporting'])}")
+                st.markdown(f"**Confidence Score:** {claim_info['confidence']:.2f}")
+                st.markdown(f"**Source Count:** {claim_info['source_count']}/{num_sources} sources")
+                
+                # Confidence interpretation
+                if claim_info['confidence'] > 0.8:
+                    st.success("🟢 **High Confidence** - Widely agreed upon across sources")
+                elif claim_info['confidence'] > 0.6:
+                    st.info("🟡 **Medium Confidence** - Generally agreed upon")
+                else:
+                    st.warning("🟠 **Lower Confidence** - Some agreement but limited sources")
+    else:
+        st.markdown("### ✅ Widely Reported")
+        st.info("No claims achieved wide agreement across sources")
+    
+    # Disputed/Framed Differently Section
+    if truth_map.get('disputed_framed_differently'):
+        st.markdown("### ⚖️ Disputed / Framed Differently")
+        st.markdown("*Claims where sources disagree or use different framing*")
+        
+        for claim_info in truth_map['disputed_framed_differently']:
+            framing = claim_info.get('framing_differences', {})
+            
+            with st.expander(f"⚖️ {claim_info['claim'][:100]}...", expanded=False):
+                st.markdown(f"**Full Claim:** {claim_info['claim']}")
+                st.markdown(f"**Sources Reporting:** {', '.join(claim_info['sources_reporting'])}")
+                st.markdown(f"**Confidence Score:** {claim_info['confidence']:.2f}")
+                
+                # Framing analysis
+                if framing.get('sentiment_range') and len(framing['sentiment_range']) > 1:
+                    st.markdown(f"**Sentiment Variation:** {', '.join(framing['sentiment_range'])}")
+                
+                if framing.get('loaded_language_detected'):
+                    st.warning("⚠️ Loaded language detected in some coverage")
+                
+                if framing.get('emphasis_variations'):
+                    st.info("📏 Varying levels of detail/emphasis across sources")
+                
+                st.markdown("**Why This Matters:** Different framing can significantly influence reader perception of the same facts.")
+    else:
+        st.markdown("### ⚖️ Disputed / Framed Differently")
+        st.success("High consensus - sources show similar framing")
+    
+    # Missing from Some Coverage Section
+    if truth_map.get('missing_from_some_coverage'):
+        st.markdown("### ⚠️ Missing from Some Coverage")
+        st.markdown("*Claims reported by some sources but omitted by others*")
+        
+        for omission in truth_map['missing_from_some_coverage']:
+            importance = omission['importance']
+            icon = "🚨" if importance == 'significant' else "⚠️"
+            
+            with st.expander(f"{icon} {omission['claim'][:100]}...", expanded=False):
+                st.markdown(f"**Full Claim:** {omission['claim']}")
+                st.markdown(f"**Reported By:** {', '.join(omission['reported_by'])}")
+                st.markdown(f"**Omitted By:** {', '.join(omission['omitted_by'])}")
+                st.markdown(f"**Importance Level:** {importance.title()}")
+                
+                if omission.get('potential_reasons'):
+                    st.markdown("**Potential Reasons for Omission:**")
+                    reason_map = {
+                        'controversial_framing': '🔥 Controversial or sensitive topic',
+                        'crisis_narrative': '📰 Crisis/emergency framing differences', 
+                        'political_sensitivity': '🏛️ Political implications'
+                    }
+                    
+                    for reason in omission['potential_reasons']:
+                        st.markdown(f"• {reason_map.get(reason, reason)}")
+                
+                if importance == 'significant':
+                    st.error("🚨 **Significant Omission** - Important information missing from multiple sources")
+                else:
+                    st.warning("⚠️ **Notable Omission** - Worth investigating why some sources didn't cover this")
+    else:
+        st.markdown("### ⚠️ Missing from Some Coverage")
+        st.success("Comprehensive coverage - no major omissions detected")
+    
+    # Methodology and Limitations
+    with st.expander("🔬 Methodology & Limitations", expanded=False):
+        st.markdown("### How This Analysis Works")
+        
+        methodology_notes = truth_map.get('methodological_notes', [])
+        for note in methodology_notes:
+            st.markdown(f"• {note}")
+        
+        st.markdown("### Important Limitations")
+        st.markdown("""
+        **What This System Does:**
+        - ✅ Shows what sources agree/disagree on
+        - ✅ Makes bias and framing visible
+        - ✅ Identifies information gaps
+        - ✅ Provides transparency about methodology
+        
+        **What This System Doesn't Do:**
+        - ❌ Determine absolute truth
+        - ❌ Eliminate all bias
+        - ❌ Replace critical thinking
+        - ❌ Account for all possible perspectives
+        
+        **Remember:** Facts and interpretation often intertwine. This tool helps you see how different sources construct their narratives, but ultimately you must triangulate reality using your own judgment.
+        """)
+    
+    # Export options
+    st.markdown("---")
+    st.markdown("## 📥 Export Truth Map")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        # Create downloadable summary
+        summary_text = f"""TRUTH MAP ANALYSIS: {topic}
+Generated: {truth_map.get('timestamp', 'Unknown')}
+
+WIDELY REPORTED CLAIMS ({len(truth_map.get('widely_reported', []))}):
+"""
+        for claim in truth_map.get('widely_reported', []):
+            summary_text += f"\n• {claim['claim']}\n  Sources: {', '.join(claim['sources_reporting'])}\n  Confidence: {claim['confidence']:.2f}\n"
+        
+        summary_text += f"\nDISPUTED/FRAMED DIFFERENTLY ({len(truth_map.get('disputed_framed_differently', []))}):  \n"
+        for claim in truth_map.get('disputed_framed_differently', []):
+            summary_text += f"\n• {claim['claim']}\n  Sources: {', '.join(claim['sources_reporting'])}\n"
+        
+        summary_text += f"\nMISSING FROM SOME COVERAGE ({len(truth_map.get('missing_from_some_coverage', []))}):  \n"
+        for omission in truth_map.get('missing_from_some_coverage', []):
+            summary_text += f"\n• {omission['claim']}\n  Reported by: {', '.join(omission['reported_by'])}\n  Omitted by: {', '.join(omission['omitted_by'])}\n"
+        
+        st.download_button(
+            label="📄 Download Summary",
+            data=summary_text,
+            file_name=f"truth_map_{topic.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+            mime="text/plain"
+        )
+    
+    with col2:
+        # JSON export
+        import json
+        json_data = json.dumps(truth_map, indent=2, ensure_ascii=False)
+        st.download_button(
+            label="📋 Download JSON", 
+            data=json_data,
+            file_name=f"truth_map_{topic.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json"
+        )
+    
+    with col3:
+        if st.button("🗑️ Clear Results"):
+            st.session_state.last_results = None
+            st.rerun()
+
+def display_convergence_analysis_results(data, settings):
+    """
+    Display Source Convergence Analysis results using the new Truth Map format.
+    """
+    # Check if we have the new truth_map format
+    convergence_data = data.get('convergence', {})
+    
+    if convergence_data.get('truth_map'):
+        # New format - display truth map
+        truth_map = convergence_data['truth_map']
+        display_truth_map(
+            truth_map, 
+            data['topic'], 
+            data.get('source_analysis', []),
+            data.get('num_sources_analyzed', 0)
+        )
+    else:
+        # Legacy format fallback
+        st.markdown(f"# 🎯 Convergence Analysis: {data['topic']}")
+        
+        # Overview metrics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Sources Analyzed", data['num_sources_analyzed'])
+        
+        with col2:
+            diversity_color = "🟢" if data['diversity_score'] > 6 else "🟡" if data['diversity_score'] > 3 else "🔴"
+            st.metric("Diversity Score", f"{data['diversity_score']:.1f}/10")
+            st.markdown(f"{diversity_color}")
+        
+        with col3:
+            credibility_color = "🟢" if data['avg_credibility'] > 7 else "🟡" if data['avg_credibility'] > 5 else "🔴"
+            st.metric("Avg Credibility", f"{data['avg_credibility']:.1f}/10")
+            st.markdown(f"{credibility_color}")
+        
+        with col4:
+            consensus = convergence_data.get('consensus_level', 0)
+            consensus_color = "🟢" if consensus > 70 else "🟡" if consensus > 40 else "🔴"
+            st.metric("Consensus Level", f"{consensus:.0f}%")
+            st.markdown(f"{consensus_color}")
+        
+        # Basic convergence points display
+        st.markdown("## 🎯 Analysis Results")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### ✅ Convergence Points")
+            convergence_points = convergence_data.get('convergence_points', [])
+            if convergence_points:
+                for point in convergence_points:
+                    st.markdown(f"• {point}")
+            else:
+                st.info("No strong convergence points detected")
+        
+        with col2:
+            st.markdown("### ⚠️ Disputed Claims")
+            disputed_claims = convergence_data.get('disputed_claims', [])
+            if disputed_claims:
+                for claim in disputed_claims:
+                    st.markdown(f"• {claim}")
+            else:
+                st.success("High consensus across sources")
+        
+        if convergence_data.get('error'):
+            st.error(f"Analysis Error: {convergence_data['error']}")
 
     # Sidebar help
     with st.sidebar:
@@ -2093,7 +3319,8 @@ CONVERGENCE POINTS (Likely True):
             "Source Convergence Analysis": "Find related articles from diverse sources and identify consensus points vs disputed claims."
         }
         
-        st.info(mode_help.get(analysis_mode, "Select an analysis mode to see help."))
+        # Display help for Source Convergence Analysis since we're in that mode
+        st.info(mode_help["Source Convergence Analysis"])
         
         if settings['model'] == 'local':
             st.warning("🏠 Local mode provides basic analysis. Use AI models (OpenAI/Anthropic) for advanced features.")
